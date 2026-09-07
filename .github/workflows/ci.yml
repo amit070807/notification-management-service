@@ -1,0 +1,73 @@
+# T008 (ADR-011) — the 11 blocking gates from the constitution's
+# "Development Workflow and Quality Gates" section. A red gate is never bypassed
+# by merge override; it is fixed or the change is reverted.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks and the OpenAPI diff need history
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Gates 1-2: build + compile
+      - name: Build
+        run: ./gradlew assemble --no-daemon
+
+      # Gate 3: architecture / dependency rule (Principle VII)
+      - name: Architecture gate
+        run: ./gradlew archTest --no-daemon
+
+      # Gates 4-7: unit, contract, integration, privacy tests (Principle VI).
+      # Testcontainers uses the runner's Docker daemon.
+      - name: Tests
+        run: ./gradlew test --no-daemon
+
+      # Gate 8: coverage floors — 90% domain, 80% overall
+      - name: Coverage floors
+        run: ./gradlew jacocoTestCoverageVerification --no-daemon
+
+      # Gate 9: secret scan (Principle V)
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Gate 10: dependency vulnerability audit.
+      # A new high or critical advisory blocks the merge.
+      - name: Dependency audit
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: notification-management-service
+          path: "."
+          format: "HTML"
+          args: >
+            --failOnCVSS 7
+            --enableExperimental
+
+      # Gate 11: OpenAPI breaking-change diff against the base branch
+      - name: OpenAPI breaking-change diff
+        if: github.event_name == 'pull_request'
+        run: |
+          git show origin/${{ github.base_ref }}:specs/001-notification-management-core/contracts/openapi.yaml \
+            > /tmp/base-openapi.yaml 2>/dev/null || exit 0
+          docker run --rm -v /tmp:/base -v "$PWD:/repo" tufin/oasdiff breaking \
+            /base/base-openapi.yaml \
+            /repo/specs/001-notification-management-core/contracts/openapi.yaml

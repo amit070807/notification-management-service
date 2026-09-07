@@ -47,14 +47,14 @@ Each has a task below and **blocks the work that depends on it**. Do not silentl
 
 **Purpose**: Project initialization. No domain logic.
 
-- [ ] T001 Initialize Gradle project with Java 21 toolchain and Spring Boot in `build.gradle.kts`, `settings.gradle.kts`, and commit the Gradle wrapper (`gradlew`, `gradle/wrapper/`)
-- [ ] T002 [P] Add PostgreSQL 16 service in `docker-compose.yml` with a named volume and no default credentials in source control
-- [ ] T003 [P] Create the package skeleton `api/`, `application/`, `domain/{model,routing,retry,state,port}/`, `persistence/`, `worker/`, `channel/`, `audit/`, `config/` under `src/main/java/com/notification/`
-- [ ] T004 [P] Configure datasource, Flyway, and application properties in `src/main/resources/application.yaml`, with all credentials read from environment variables and an `.env.example` committed in place of real values
-- [ ] T005 [P] Configure JaCoCo coverage verification at 90% for `com.notification.domain.*` and 80% overall in `build.gradle.kts`
-- [ ] T006 [P] Configure structured JSON logging with `logstash-logback-encoder` in `src/main/resources/logback-spring.xml`, including MDC fields for correlationId, notificationId, deliveryId
-- [ ] T007 **Resolve U-2** and record the answer as ADR-011 in `specs/001-notification-management-core/research.md`: CI platform, plus the concrete tool behind each of the 11 blocking gates
-- [ ] T008 Implement the CI pipeline with all 11 gates blocking and non-bypassable in the CI config file named by the U-2 answer (e.g. `.github/workflows/ci.yml`) (depends on T007)
+- [X] T001 Initialize Gradle project with Java 21 toolchain and Spring Boot in `build.gradle.kts`, `settings.gradle.kts`, and commit the Gradle wrapper (`gradlew`, `gradle/wrapper/`)
+- [X] T002 [P] Add PostgreSQL 16 service in `docker-compose.yml` with a named volume and no default credentials in source control
+- [X] T003 [P] Create the package skeleton `api/`, `application/`, `domain/{model,routing,retry,state,port}/`, `persistence/`, `worker/`, `channel/`, `audit/`, `config/` under `src/main/java/com/notification/`
+- [X] T004 [P] Configure datasource, Flyway, and application properties in `src/main/resources/application.yaml`, with all credentials read from environment variables and an `.env.example` committed in place of real values
+- [X] T005 [P] Configure JaCoCo coverage verification at 90% for `com.notification.domain.*` and 80% overall in `build.gradle.kts`
+- [X] T006 [P] Configure structured JSON logging with `logstash-logback-encoder` in `src/main/resources/logback-spring.xml`, including MDC fields for correlationId, notificationId, deliveryId
+- [X] T007 **Resolve U-2** and record the answer as ADR-011 in `specs/001-notification-management-core/research.md`: CI platform, plus the concrete tool behind each of the 11 blocking gates
+- [X] T008 Implement the CI pipeline with all 11 gates blocking and non-bypassable in the CI config file named by the U-2 answer (e.g. `.github/workflows/ci.yml`) (depends on T007)
 
 ---
 
@@ -67,38 +67,38 @@ depends on this phase.
 
 ### Architecture gate (Principle VII)
 
-- [ ] T009 Write the ArchUnit rules in `src/test/java/com/notification/architecture/ArchitectureRulesTest.java`: no class in `..domain..` may depend on `org.springframework..`, `java.sql..`, `javax.sql..`, `..api..`, `..persistence..`, `..worker..`, `..channel..`, `..config..`; and no call to `Instant.now()`, `LocalDateTime.now()` or `UUID.randomUUID()` from `..domain..`
+- [X] T009 Write the ArchUnit rules in `src/test/java/com/notification/architecture/ArchitectureRulesTest.java`: no class in `..domain..` may depend on `org.springframework..`, `java.sql..`, `javax.sql..`, `..api..`, `..persistence..`, `..worker..`, `..channel..`, `..config..`; and no call to `Instant.now()`, `LocalDateTime.now()` or `UUID.randomUUID()` from `..domain..`
 
 ### Ports (Principle III)
 
-- [ ] T010 [P] Define `ClockPort`, `IdPort` and `RandomPort` interfaces in `src/main/java/com/notification/domain/port/`
-- [ ] T011 [P] Define `ChannelProviderPort` returning a `DeliveryOutcome(success, FailureClassification, bounded diagnostic)` in `src/main/java/com/notification/domain/port/ChannelProviderPort.java` — the bounded diagnostic is what stops a provider's raw response body reaching audit
-- [ ] T012 [P] Define `NotificationRepositoryPort`, `DeliveryRepositoryPort`, `OutboxRepositoryPort` in `src/main/java/com/notification/domain/port/`
-- [ ] T013 [P] Define `AuditRepositoryPort` in `src/main/java/com/notification/domain/port/AuditRepositoryPort.java` with **only** `append` and query methods — no update, no delete (Principle V enforced by absence of mechanism)
-- [ ] T014 [P] Implement `MutableClock` and `SequentialIdGenerator` test fixtures in `src/test/java/com/notification/fixtures/`
+- [X] T010 [P] Define `ClockPort`, `IdPort` and `RandomPort` interfaces in `src/main/java/com/notification/domain/port/`
+- [X] T011 [P] Define `ChannelProviderPort` returning a `DeliveryOutcome(success, FailureClassification, bounded diagnostic)` in `src/main/java/com/notification/domain/port/ChannelProviderPort.java` — the bounded diagnostic is what stops a provider's raw response body reaching audit
+- [X] T012 [P] Define `NotificationRepositoryPort`, `DeliveryRepositoryPort`, `OutboxRepositoryPort` in `src/main/java/com/notification/domain/port/`
+- [X] T013 [P] Define `AuditRepositoryPort` in `src/main/java/com/notification/domain/port/AuditRepositoryPort.java` with **only** `append` and query methods — no update, no delete (Principle V enforced by absence of mechanism)
+- [X] T014 [P] Implement `MutableClock` and `SequentialIdGenerator` test fixtures in `src/test/java/com/notification/fixtures/`
 
 ### Domain enums and state machines (Principle IV)
 
-- [ ] T015 [P] Define `Channel` (EMAIL, SMS), `Severity`, `Priority`, `NotificationType` enums in `src/main/java/com/notification/domain/model/`, values matching `contracts/openapi.yaml` exactly
-- [ ] T016 [P] Write the failing transition truth-table test for all 9 delivery states, **including every illegal transition**, in `src/test/java/com/notification/unit/DeliveryStateTransitionTest.java`
-- [ ] T017 Implement `DeliveryState` with an explicit `allowedTransitions` set that throws on an illegal transition in `src/main/java/com/notification/domain/state/DeliveryState.java` (depends on T016)
-- [ ] T018 [P] Write the failing rollup test covering all 6 rules from data-model.md, asserting rule 4 outranks rule 6 so a wholly expired notification is not FAILED, in `src/test/java/com/notification/unit/NotificationStateRollupTest.java`
-- [ ] T019 Implement `NotificationState` and the rollup function in `src/main/java/com/notification/domain/state/NotificationState.java` (depends on T018)
-- [ ] T020 [P] Write the failing retryability matrix test for all 6 classifications in `src/test/java/com/notification/unit/FailureClassificationTest.java`
-- [ ] T021 Implement `FailureClassification` and `Retryability` with the partition declared in exactly one place in `src/main/java/com/notification/domain/retry/` (depends on T020)
+- [X] T015 [P] Define `Channel` (EMAIL, SMS), `Severity`, `Priority`, `NotificationType` enums in `src/main/java/com/notification/domain/model/`, values matching `contracts/openapi.yaml` exactly
+- [X] T016 [P] Write the failing transition truth-table test for all 9 delivery states, **including every illegal transition**, in `src/test/java/com/notification/unit/DeliveryStateTransitionTest.java`
+- [X] T017 Implement `DeliveryState` with an explicit `allowedTransitions` set that throws on an illegal transition in `src/main/java/com/notification/domain/state/DeliveryState.java` (depends on T016)
+- [X] T018 [P] Write the failing rollup test covering all 6 rules from data-model.md, asserting rule 4 outranks rule 6 so a wholly expired notification is not FAILED, in `src/test/java/com/notification/unit/NotificationStateRollupTest.java`
+- [X] T019 Implement `NotificationState` and the rollup function in `src/main/java/com/notification/domain/state/NotificationState.java` (depends on T018)
+- [X] T020 [P] Write the failing retryability matrix test for all 6 classifications in `src/test/java/com/notification/unit/FailureClassificationTest.java`
+- [X] T021 Implement `FailureClassification` and `Retryability` with the partition declared in exactly one place in `src/main/java/com/notification/domain/retry/` (depends on T020)
 
 ### Schema and persistence foundations
 
-- [ ] T022 Write the Flyway migration `src/main/resources/db/migration/V1__initial_schema.sql` creating `notification`, `notification_content`, `recipient`, `routing_decision`, `routing_channel_outcome`, `delivery`, `delivery_attempt`, `audit_event`, `outbox` per data-model.md — including a **comment explaining that `client_notification_id` intentionally has no unique constraint** (D4), or a future maintainer will "fix" it and silently implement deduplication
-- [ ] T023 **Resolve U-4**, record it as ADR-012 in `specs/001-notification-management-core/research.md`, then implement the recipient-reference masking function in `src/main/java/com/notification/audit/Masking.java`
-- [ ] T024 [P] Define the sealed audit payload records, one per event type, in `src/main/java/com/notification/audit/payload/` — a closed allowlist, never a free-form map, so the content payload is structurally excluded
-- [ ] T025 **Resolve U-1**, record it as ADR-013 in `specs/001-notification-management-core/research.md`, and wire the chosen OpenAPI approach into `build.gradle.kts` so `contracts/openapi.yaml` governs the API surface
-- [ ] T026 Implement the `JdbcClient` audit adapter in `src/main/java/com/notification/persistence/JdbcAuditRepository.java`, append-only (depends on T013, T022, T023)
-- [ ] T027 Write the migration `src/main/resources/db/migration/V2__grants.sql` granting the application role `INSERT, SELECT` only on `audit_event`, `routing_decision` and `routing_channel_outcome`
-- [ ] T028 [P] Implement `ApiExceptionHandler` in `src/main/java/com/notification/api/ApiExceptionHandler.java` producing the `ValidationProblem` body that names **every** offending field, not just the first (FR-004)
-- [ ] T029 Implement the privacy test harness in `src/test/java/com/notification/privacy/SensitiveDataScanner.java`, scanning audit rows, log output and metric labels for a planted marker string (Principle V gate)
-- [ ] T030 [P] Implement the Testcontainers PostgreSQL base class in `src/test/java/com/notification/integration/PostgresIntegrationTest.java`
-- [ ] T031 [P] Configure Micrometer counters and the liveness/readiness endpoints, with readiness reflecting datastore reachability, in `src/main/java/com/notification/config/ObservabilityConfig.java`
+- [X] T022 Write the Flyway migration `src/main/resources/db/migration/V1__initial_schema.sql` creating `notification`, `notification_content`, `recipient`, `routing_decision`, `routing_channel_outcome`, `delivery`, `delivery_attempt`, `audit_event`, `outbox` per data-model.md — including a **comment explaining that `client_notification_id` intentionally has no unique constraint** (D4), or a future maintainer will "fix" it and silently implement deduplication
+- [X] T023 **Resolve U-4**, record it as ADR-012 in `specs/001-notification-management-core/research.md`, then implement the recipient-reference masking function in `src/main/java/com/notification/audit/Masking.java`
+- [X] T024 [P] Define the sealed audit payload records, one per event type, in `src/main/java/com/notification/audit/payload/` — a closed allowlist, never a free-form map, so the content payload is structurally excluded
+- [X] T025 **Resolve U-1**, record it as ADR-013 in `specs/001-notification-management-core/research.md`, and wire the chosen OpenAPI approach into `build.gradle.kts` so `contracts/openapi.yaml` governs the API surface
+- [X] T026 Implement the `JdbcClient` audit adapter in `src/main/java/com/notification/persistence/JdbcAuditRepository.java`, append-only (depends on T013, T022, T023)
+- [X] T027 Write the migration `src/main/resources/db/migration/V2__grants.sql` granting the application role `INSERT, SELECT` only on `audit_event`, `routing_decision` and `routing_channel_outcome`
+- [X] T028 [P] Implement `ApiExceptionHandler` in `src/main/java/com/notification/api/ApiExceptionHandler.java` producing the `ValidationProblem` body that names **every** offending field, not just the first (FR-004)
+- [X] T029 Implement the privacy test harness in `src/test/java/com/notification/privacy/SensitiveDataScanner.java`, scanning audit rows, log output and metric labels for a planted marker string (Principle V gate)
+- [X] T030 [P] Implement the Testcontainers PostgreSQL base class in `src/test/java/com/notification/integration/PostgresIntegrationTest.java`
+- [X] T031 [P] Configure Micrometer counters and the liveness/readiness endpoints, with readiness reflecting datastore reachability, in `src/main/java/com/notification/config/ObservabilityConfig.java`
 
 **Checkpoint**: Domain core, schema and all three non-negotiable gates are in place. User stories may begin.
 

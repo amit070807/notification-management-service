@@ -1,0 +1,41 @@
+# Build output
+build/
+out/
+target/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Gradle
+.gradle/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Environment / secrets — never commit real values
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+*.tmp
+*.swp
+
+# Spec Kit + agent scaffolding: machine/tooling config, not project source.
+# The constitution is the exception — it is the governing document and is tracked.
+.claude/
+.specify/*
+!.specify/memory/
+.specify/memory/*
+!.specify/memory/constitution.md

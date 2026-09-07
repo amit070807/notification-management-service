@@ -230,6 +230,82 @@ DO-004.
 
 ---
 
+## ADR-011 (owner): GitHub Actions, invoking a Gradle `check` aggregate — resolves U-2
+
+**Context**: The constitution names 11 blocking CI gates but no CI provider was configured.
+
+**Decision**: GitHub Actions at `.github/workflows/ci.yml`, invoking the same Gradle tasks a
+developer runs locally rather than re-declaring tooling in YAML.
+
+**Consequences**: Every gate is reproducible on a laptop and in CI with one configuration.
+`check` depends on `jacocoTestCoverageVerification`, so coverage floors cannot be skipped.
+**Known limitation**: the branch has never been pushed, so the workflow will not execute until
+it is — the gates are real locally but unproven in CI.
+
+**Serves**: Constitution CI Gates; SC-011.
+
+---
+
+## ADR-012 (owner): Recipient reference masked as prefix plus hash — resolves U-4
+
+**Context**: FR-052 requires the recipient reference to be masked in audit records, logs and
+metric labels, without saying how. After D5 the reference is the only recipient data held.
+
+**Options**: (a) short plaintext prefix plus a SHA-256 prefix; (b) hash only; (c) an opaque
+per-notification token.
+
+**Decision**: (a) — `us…4f3a9c21`: at most 2 leading characters, an ellipsis, and the first 8 hex
+characters of the SHA-256 digest.
+
+**Consequences**: Records for the same recipient remain correlatable across notifications, and an
+operator reading audit can recognise a recipient during debugging. Cost: a small amount of
+plaintext survives, so the mask is not anonymisation and must not be described as such. Rejected
+(b): correlatable but undebuggable without a lookup. Rejected (c): destroys cross-notification
+correlation, so "what happened to this recipient over time" becomes unanswerable from audit.
+
+**Serves**: FR-052; Principle V.
+
+---
+
+## ADR-013 (owner): Hand-written controllers with a contract-conformance test — resolves U-1
+
+**Context**: Principle I requires `contracts/openapi.yaml` to be authoritative but does not say
+whether interfaces are generated from it or asserted against it.
+
+**Options**: (a) hand-write controllers, assert conformance with
+`swagger-request-validator-mockmvc`; (b) generate server interfaces and DTOs with
+openapi-generator.
+
+**Decision**: (a).
+
+**Consequences**: Controller code stays readable and DTOs can carry Jakarta Validation
+annotations directly, which is what makes FR-004's "name every offending field" rejection
+structural rather than procedural. Drift from the contract is caught by a blocking test rather
+than by the compiler — a weaker guarantee, accepted deliberately. **Mitigation**: the conformance
+test runs against every contract path, and a separate enum-parity test (T109) asserts the closed
+enums match the document exactly.
+
+**Serves**: Principle I; FR-004.
+
+---
+
+## ADR-014 (owner): Routing policy fixed at startup — resolves U-3
+
+**Context**: FR-026 requires the policy to be changeable without altering surrounding behavior,
+but does not say whether a restart is acceptable, and the source states no availability target
+(G-11).
+
+**Decision**: The policy loads once at startup into an immutable `RoutingPolicy` value object.
+
+**Consequences**: Determinism (FR-023) is trivially satisfied — no in-flight submission can
+straddle two policy versions. A policy change needs a restart, which is acceptable with no stated
+availability requirement. Rejected: runtime reload, which would require every swap to be atomic
+and version-stamped for FR-021 to still hold.
+
+**Serves**: FR-020a, FR-023, FR-026; Principle III.
+
+---
+
 ## Resolved Unknowns
 
 | Unknown | Resolution | Authority |
