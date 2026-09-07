@@ -186,21 +186,21 @@ this story delivers **three of the source's four factors**.
 
 ### Tests for User Story 3 ⚠️ WRITE FIRST, MUST FAIL
 
-- [ ] T056 [P] [US3] Write the routing truth-table test in `src/test/java/com/notification/unit/ChannelRouterTest.java`, covering every combination of requested channels × severity × policy rule, asserting the selected set and every reason code
-- [ ] T057 [P] [US3] Write the determinism test asserting identical inputs always produce identical selections (FR-023, SC-012) in `src/test/java/com/notification/unit/RoutingDeterminismTest.java`
-- [ ] T058 [P] [US3] Write the **preference-independence test** in `src/test/java/com/notification/unit/RoutingPreferenceIndependenceTest.java`: two submissions differing only in recipient reference must produce identical selections and reason codes (SC-013). This test fails if anyone later adds a recipient attribute that routing could consult — the G-26 regression worth catching
-- [ ] T059 [P] [US3] Integration test asserting a recorded decision is unchanged after the policy changes (FR-021) in `src/test/java/com/notification/integration/RoutingDecisionImmutabilityTest.java`
-- [ ] T060 [P] [US3] Integration test asserting a recipient with no selected channel reaches `UNDELIVERABLE`, not perpetual pending (FR-024) in `src/test/java/com/notification/integration/EmptyRoutingTest.java`
+- [X] T056 [P] [US3] Write the routing truth-table test in `src/test/java/com/notification/unit/ChannelRouterTest.java`, covering every combination of requested channels × severity × policy rule, asserting the selected set and every reason code
+- [X] T057 [P] [US3] Write the determinism test asserting identical inputs always produce identical selections (FR-023, SC-012) in `src/test/java/com/notification/unit/RoutingDeterminismTest.java`
+- [X] T058 [P] [US3] Write the **preference-independence test** in `src/test/java/com/notification/unit/RoutingPreferenceIndependenceTest.java`: two submissions differing only in recipient reference must produce identical selections and reason codes (SC-013). This test fails if anyone later adds a recipient attribute that routing could consult — the G-26 regression worth catching
+- [X] T059 [P] [US3] Integration test asserting a recorded decision is unchanged after the policy changes (FR-021) in `src/test/java/com/notification/integration/RoutingDecisionImmutabilityTest.java`
+- [X] T060 [P] [US3] Integration test asserting a recipient with no selected channel reaches `UNDELIVERABLE`, not perpetual pending (FR-024) in `src/test/java/com/notification/integration/EmptyRoutingTest.java`
 
 ### Implementation for User Story 3
 
-- [ ] T061 [US3] **Resolve U-3** and record it as ADR-014 in `specs/001-notification-management-core/research.md`: is the routing policy reloadable at runtime, or fixed at startup?
-- [ ] T062 [P] [US3] Author the versioned policy resource `src/main/resources/routing-policy.yaml` with an explicit `version` field
-- [ ] T063 [US3] Implement the immutable `RoutingPolicy` value object and its loader in `src/main/java/com/notification/domain/routing/RoutingPolicy.java` and `src/main/java/com/notification/config/RoutingPolicyLoader.java`, per the U-3 answer (depends on T061, T062)
-- [ ] T064 [US3] Replace the identity router from T040 with policy evaluation in `src/main/java/com/notification/domain/routing/ChannelRouter.java` — **policy is the deciding authority**; requested channels and severity are inputs it consults (FR-020a). The router must have no parameter, field or import through which a recipient attribute could reach it
-- [ ] T065 [US3] Persist `policy_version` and per-channel reason codes with every decision in `src/main/java/com/notification/persistence/JdbcRoutingDecisionRepository.java` (FR-022, FR-026)
-- [ ] T066 [US3] Expose `selectedChannels`, `channelOutcomes` and `routingPolicyVersion` in `src/main/java/com/notification/api/mapper/StatusMapper.java` (depends on T052)
-- [ ] T067 [US3] Record the `ROUTING_DECISION_MADE` audit event with the policy version from `src/main/java/com/notification/application/SubmissionService.java` (depends on T026)
+- [X] T061 [US3] **Resolve U-3** and record it as ADR-014 in `specs/001-notification-management-core/research.md`: is the routing policy reloadable at runtime, or fixed at startup?
+- [X] T062 [P] [US3] Author the versioned policy resource `src/main/resources/routing-policy.yaml` with an explicit `version` field
+- [X] T063 [US3] Implement the immutable `RoutingPolicy` value object and its loader in `src/main/java/com/notification/domain/routing/RoutingPolicy.java` and `src/main/java/com/notification/config/RoutingPolicyLoader.java`, per the U-3 answer (depends on T061, T062)
+- [X] T064 [US3] Replace the identity router from T040 with policy evaluation in `src/main/java/com/notification/domain/routing/ChannelRouter.java` — **policy is the deciding authority**; requested channels and severity are inputs it consults (FR-020a). The router must have no parameter, field or import through which a recipient attribute could reach it
+- [X] T065 [US3] Persist `policy_version` and per-channel reason codes with every decision in `src/main/java/com/notification/persistence/JdbcRoutingDecisionRepository.java` (FR-022, FR-026)
+- [X] T066 [US3] Expose `selectedChannels`, `channelOutcomes` and `routingPolicyVersion` in `src/main/java/com/notification/api/mapper/StatusMapper.java` (depends on T052)
+- [X] T067 [US3] Record the `ROUTING_DECISION_MADE` audit event with the policy version from `src/main/java/com/notification/application/SubmissionService.java` (depends on T026)
 
 **Checkpoint**: Routing is policy-driven, explained, reproducible, and provably independent of recipient data.
 

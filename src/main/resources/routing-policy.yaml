@@ -1,0 +1,28 @@
+# T062 — the routing policy (source 4.3, FR-026).
+#
+# Loaded once at startup into an immutable value object (ADR-014, resolving U-3). A change
+# requires a restart, which is acceptable because the source states no availability target
+# (spec G-11), and it makes determinism trivial: no in-flight submission can straddle two
+# policy versions.
+#
+# `version` is recorded against every routing decision, so a decision stays explicable after
+# the policy changes (SC-010).
+#
+# NOTE what this file deliberately cannot express: anything recipient-specific. Source 4.3
+# names recipient preferences as a fourth factor, but the document supplies no preference data
+# and defines no preference source (spec G-05), so it is deferred and recorded as G-26. Adding
+# a per-recipient rule here would erode that deferral under another name (FR-019a).
+version: "2026-09-07.1"
+
+channels:
+  EMAIL:
+    enabled: true
+    # No floor: EMAIL carries any severity.
+  SMS:
+    enabled: true
+    # SMS is reserved for genuinely urgent notifications.
+    minimumSeverity: HIGH
+    # Escalation: at CRITICAL, select SMS even when the submitter did not request it.
+    # Spec register item 5 permits escalation ONLY where the policy declares it explicitly,
+    # which is what this key does.
+    escalateAtSeverity: CRITICAL
