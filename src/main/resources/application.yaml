@@ -1,5 +1,11 @@
 # T004 — all credentials come from the environment. No secrets in source control.
 spring:
+  # .env is read by docker compose, but NOT by the JVM - so `./gradlew bootRun` would otherwise
+  # start with an empty POSTGRES_PASSWORD and fail Flyway with "password authentication failed".
+  # Importing it here makes the documented two-command flow work, and works for `java -jar` too.
+  # `optional:` means a deployment that supplies real environment variables needs no .env at all.
+  config:
+    import: optional:file:.env[.properties]
   application:
     name: notification-management-service
   datasource:

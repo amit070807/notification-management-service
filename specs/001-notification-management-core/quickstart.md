@@ -20,9 +20,20 @@ contains no real secrets, only `.example` files.
 ## Run it
 
 ```bash
+cp .env.example .env          # set POSTGRES_PASSWORD before first run
 docker compose up -d          # PostgreSQL 16
 ./gradlew bootRun             # Flyway migrates on startup
 ```
+
+`.env` is read by docker compose *and* by the application (via
+`spring.config.import`), so both sides agree on the password without exporting
+anything into your shell. A deployment supplying real environment variables needs
+no `.env` at all — the import is declared `optional:`.
+
+**If you see `password authentication failed`**: the PostgreSQL data volume keeps
+the credentials from its *first* start, so changing `POSTGRES_PASSWORD` in `.env`
+afterwards will not take effect. Reset with
+`docker compose down -v && docker compose up -d`.
 
 Service on `http://localhost:8080`, contract at `/api/v1`. Health at `/actuator/health`;
 readiness reflects datastore reachability (constitution Observability).
