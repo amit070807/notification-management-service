@@ -1,0 +1,348 @@
+openapi: 3.0.3
+info:
+  title: Notification Management Service
+  version: 1.0.0
+  description: |
+    Submission and status retrieval for the notification management capability.
+    Derived from Greenfield_Requirements.pdf sections 4.1 and 4.2.
+
+    This document is AUTHORITATIVE (constitution Principle I). Code conforms to it;
+    it is not generated from code. Every enum here is closed. Breaking changes
+    require a new major version path.
+
+    Scope notes visible in this contract:
+      - Channel selection uses requested channels, severity and routing policy only.
+        Recipient preferences (source 4.3) are NOT implemented - see spec G-26.
+      - Duplicate clientNotificationId values are accepted as independent
+        notifications; the server-issued `id` is the retrieval key (spec D4).
+        This is not idempotency - no replay, no deduplication.
+      - A recipient is an OPAQUE REFERENCE and nothing more (spec D5). The source
+        defines no recipient field, so no address or contact value is submitted or
+        stored. Recipient validity is reported by the provider at delivery time as
+        INVALID_RECIPIENT (source 4.5), not validated against a schema here. How a
+        real provider resolves a reference to a destination is undefined by the
+        source - see spec G-32.
+servers:
+  - url: /api/v1
+
+paths:
+  /notifications:
+    post:
+      summary: Submit a notification for asynchronous processing
+      description: |
+        Accepts or rejects the submission. Acceptance means the notification and its
+        deliveries are durably recorded and retrievable (FR-015); it does NOT report a
+        delivery outcome, because no delivery has been attempted (FR-029).
+      operationId: submitNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitNotificationRequest'
+      responses:
+        '202':
+          description: Accepted for processing (FR-006).
+          headers:
+            Location:
+              description: Status resource for the server-issued identity.
+              schema: { type: string, format: uri }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionAccepted'
+        '400':
+          description: Rejected. Every offending field is named (FR-004).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ValidationProblem'
+
+  /notifications/{id}/status:
+    get:
+      summary: Retrieve notification status
+      description: |
+        Returns overall status, selected channels, delivery status by recipient AND
+        channel, and the relevant timestamps (source 4.2).
+      operationId: getNotificationStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Server-issued notification identity (FR-008).
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Current status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationStatus'
+        '404':
+          description: |
+            No notification with this identity was ever issued. Distinct from a known
+            notification with no completed deliveries, which returns 200 (FR-018).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+components:
+  schemas:
+
+    Channel:
+      type: string
+      description: Closed set (ADR-005).
+      enum: [EMAIL, SMS]
+
+    Severity:
+      type: string
+      enum: [LOW, MEDIUM, HIGH, CRITICAL]
+
+    Priority:
+      type: string
+      description: Stored and returned; drives no behavior in this iteration (spec G-15).
+      enum: [LOW, NORMAL, HIGH]
+
+    NotificationType:
+      type: string
+      enum: [ALERT, REMINDER, TRANSACTIONAL, SYSTEM]
+
+    NotificationState:
+      type: string
+      enum: [ACCEPTED, IN_PROGRESS, COMPLETED, PARTIALLY_FAILED, FAILED, EXPIRED]
+
+    DeliveryState:
+      type: string
+      enum:
+        - PENDING
+        - QUEUED
+        - IN_PROGRESS
+        - DELIVERED
+        - RETRY_SCHEDULED
+        - FAILED
+        - EXHAUSTED
+        - EXPIRED
+        - UNDELIVERABLE
+
+    FailureClassification:
+      type: string
+      description: Closed taxonomy from source 4.5, plus UNKNOWN which fails closed (FR-041).
+      enum:
+        - TRANSIENT_PROVIDER_FAILURE
+        - PERMANENT_PROVIDER_REJECTION
+        - INVALID_RECIPIENT
+        - TIMEOUT
+        - AUTH_ERROR
+        - UNKNOWN
+
+    RoutingReasonCode:
+      type: string
+      enum:
+        - REQUESTED_AND_ALLOWED
+        - NOT_REQUESTED
+        - POLICY_EXCLUDED
+        - SEVERITY_ESCALATED
+        - CHANNEL_DISABLED
+
+    RecipientRef:
+      type: string
+      description: |
+        Opaque recipient reference (spec D5). The service does not interpret it and
+        holds no other recipient data. Assumed to carry personal data, so it is masked
+        in audit records and logs (FR-052), though it is echoed in status responses to
+        the system that supplied it.
+      minLength: 1
+      maxLength: 200
+
+    SubmitNotificationRequest:
+      type: object
+      required:
+        - clientNotificationId
+        - sourceSystem
+        - correlationId
+        - notificationType
+        - severity
+        - priority
+        - recipients
+        - requestedChannels
+        - createdAt
+        - content
+      properties:
+        clientNotificationId:
+          type: string
+          description: |
+            Caller's identifier (source 4.1). NOT required to be unique - duplicates are
+            accepted as independent notifications (FR-008b, spec D4).
+          minLength: 1
+          maxLength: 200
+        sourceSystem: { type: string, minLength: 1, maxLength: 200 }
+        correlationId:
+          type: string
+          description: Event or correlation identifier; keys the audit history (FR-048).
+          minLength: 1
+          maxLength: 200
+        notificationType:
+          $ref: '#/components/schemas/NotificationType'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        priority:
+          $ref: '#/components/schemas/Priority'
+        recipients:
+          type: array
+          description: |
+            At least one recipient (FR-005). Opaque references only - the source defines
+            no recipient field, so none is requested here (spec D5).
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RecipientRef'
+        requestedChannels:
+          type: array
+          description: |
+            Requested or eligible channels. A proposal the routing policy may decline
+            (FR-020a) - not an instruction.
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Channel'
+        createdAt:
+          type: string
+          format: date-time
+          description: Caller-supplied; recorded as given alongside a system receipt time (G-21).
+        notBefore:
+          type: string
+          format: date-time
+          description: Optional. Delivery MUST NOT be attempted before this time (FR-003a).
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            Optional. Delivery MUST NOT be attempted after this time (FR-003b). Must be
+            after notBefore when both are present (FR-003d), and must not already have
+            passed (FR-003e).
+        content:
+          $ref: '#/components/schemas/ContentPayload'
+
+    ContentPayload:
+      type: object
+      description: |
+        Opaque, source-authored payload (spec D1). The service never parses, renders or
+        transforms it, and it never appears in a status response or an audit record
+        (FR-055, FR-056).
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          description: Opaque content. Size-bounded at the boundary (FR-059).
+        mediaType:
+          type: string
+          maxLength: 100
+
+    SubmissionAccepted:
+      type: object
+      required: [id, clientNotificationId, state, receivedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Server-issued identity. THE key for status retrieval (FR-008, D4).
+        clientNotificationId:
+          type: string
+          description: Echoed back; descriptive, not identifying (FR-008a).
+        state:
+          $ref: '#/components/schemas/NotificationState'
+        receivedAt: { type: string, format: date-time }
+
+    DeliveryStatus:
+      type: object
+      description: One entry per recipient AND channel pair (FR-012, FR-014).
+      required: [recipientRef, channel, state, attemptCount, stateChangedAt]
+      properties:
+        recipientRef:
+          $ref: '#/components/schemas/RecipientRef'
+        channel:
+          $ref: '#/components/schemas/Channel'
+        state:
+          $ref: '#/components/schemas/DeliveryState'
+        attemptCount: { type: integer, minimum: 0 }
+        lastFailureClassification:
+          $ref: '#/components/schemas/FailureClassification'
+        nextAttemptAt: { type: string, format: date-time, nullable: true }
+        stateChangedAt: { type: string, format: date-time }
+
+    ChannelOutcome:
+      type: object
+      description: Why each candidate channel was selected or excluded (FR-022).
+      required: [recipientRef, channel, selected, reasonCode]
+      properties:
+        recipientRef:
+          $ref: '#/components/schemas/RecipientRef'
+        channel:
+          $ref: '#/components/schemas/Channel'
+        selected: { type: boolean }
+        reasonCode:
+          $ref: '#/components/schemas/RoutingReasonCode'
+
+    NotificationStatus:
+      type: object
+      required:
+        - id
+        - clientNotificationId
+        - correlationId
+        - state
+        - selectedChannels
+        - deliveries
+        - receivedAt
+      properties:
+        id: { type: string, format: uuid }
+        clientNotificationId: { type: string }
+        correlationId: { type: string }
+        state:
+          $ref: '#/components/schemas/NotificationState'
+          description: Deterministic rollup of the delivery states (FR-016).
+        selectedChannels:
+          type: array
+          description: Channels selected by routing (source 4.2).
+          items:
+            $ref: '#/components/schemas/Channel'
+        routingPolicyVersion:
+          type: string
+          description: Policy version that produced the decision (FR-026).
+        channelOutcomes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelOutcome'
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryStatus'
+        receivedAt: { type: string, format: date-time }
+        notBefore: { type: string, format: date-time, nullable: true }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        stateChangedAt: { type: string, format: date-time }
+
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+
+    ValidationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [errors]
+          properties:
+            errors:
+              type: array
+              description: Every offending field, not just the first (FR-004).
+              items:
+                type: object
+                required: [field, code, message]
+                properties:
+                  field: { type: string }
+                  code: { type: string }
+                  message: { type: string }
