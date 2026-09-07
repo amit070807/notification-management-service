@@ -21,6 +21,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @SpringBootTest
 @Testcontainers
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(TestClockConfig.class)
 public abstract class PostgresIntegrationTest {
 
     @SuppressWarnings("resource")

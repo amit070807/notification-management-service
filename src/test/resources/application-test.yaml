@@ -1,3 +1,9 @@
 spring:
   flyway:
     enabled: true
+  task:
+    scheduling:
+      enabled: false
+notification:
+  worker:
+    poll-interval-ms: 3600000

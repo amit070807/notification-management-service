@@ -306,6 +306,29 @@ and version-stamped for FR-021 to still hold.
 
 ---
 
+## ADR-015 (owner): Simulated provider failures driven by static configuration — resolves U-5
+
+**Context**: The simulated providers must be able to emit all six failure classifications so
+SC-005 is demonstrable. Spec G-22 authorises simulated providers but says nothing about how a
+failure is triggered.
+
+**Options**: (a) static configuration read at startup; (b) a per-request directive carried in the
+submission; (c) test-only programmability, with a running instance always succeeding.
+
+**Decision**: (a).
+
+**Consequences**: The production API contract stays free of test affordances, and no caller can
+steer delivery behaviour — option (b) would have made the simulator an injection surface reachable
+by anyone who can submit. Quickstart scenario 6 stays reproducible against a running instance,
+which (c) would have made impossible without a code edit, weakening DO-001. Cost: changing what a
+demo does requires a configuration edit and a restart. Integration tests bypass this entirely with
+a programmable script bean implementing the same `ChannelProviderPort`, so the production code
+path is what the tests exercise (Principle VI).
+
+**Serves**: FR-037, FR-041, SC-005; Principles V, VI; spec G-22.
+
+---
+
 ## Resolved Unknowns
 
 | Unknown | Resolution | Authority |

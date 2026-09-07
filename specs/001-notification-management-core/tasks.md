@@ -218,24 +218,24 @@ terminal outcome visible in status, with submission having returned before any a
 
 ### Tests for User Story 4 ⚠️ WRITE FIRST, MUST FAIL
 
-- [ ] T068 [P] [US4] Integration test for the full lifecycle submit → outbox → claim → attempt → DELIVERED → status, using the injected clock and invoking the worker directly with no sleeps, in `src/test/java/com/notification/integration/DeliveryLifecycleTest.java`
-- [ ] T069 [P] [US4] **Concurrency test**: two workers against one delivery produce exactly one claim and one attempt row per attempt number (Principle II) in `src/test/java/com/notification/integration/ConcurrentWorkerClaimTest.java`
-- [ ] T070 [P] [US4] Integration test asserting no attempt occurs before `notBefore`, and the delivery becomes eligible once it passes, across all four present/absent combinations (FR-031, SC-014) in `src/test/java/com/notification/integration/NotBeforeTest.java`
-- [ ] T071 [P] [US4] Integration test asserting no attempt occurs after `expiresAt` (FR-032, SC-007) in `src/test/java/com/notification/integration/ExpiryTest.java`
-- [ ] T072 [P] [US4] Integration test asserting an attempt on a channel absent from the recorded routing decision is impossible (FR-035) in `src/test/java/com/notification/integration/UnroutedChannelGuardTest.java`
+- [X] T068 [P] [US4] Integration test for the full lifecycle submit → outbox → claim → attempt → DELIVERED → status, using the injected clock and invoking the worker directly with no sleeps, in `src/test/java/com/notification/integration/DeliveryLifecycleTest.java`
+- [X] T069 [P] [US4] **Concurrency test**: two workers against one delivery produce exactly one claim and one attempt row per attempt number (Principle II) in `src/test/java/com/notification/integration/ConcurrentWorkerClaimTest.java`
+- [X] T070 [P] [US4] Integration test asserting no attempt occurs before `notBefore`, and the delivery becomes eligible once it passes, across all four present/absent combinations (FR-031, SC-014) in `src/test/java/com/notification/integration/NotBeforeTest.java`
+- [X] T071 [P] [US4] Integration test asserting no attempt occurs after `expiresAt` (FR-032, SC-007) in `src/test/java/com/notification/integration/ExpiryTest.java`
+- [X] T072 [P] [US4] Integration test asserting an attempt on a channel absent from the recorded routing decision is impossible (FR-035) in `src/test/java/com/notification/integration/UnroutedChannelGuardTest.java`
 
 ### Implementation for User Story 4
 
-- [ ] T073 [US4] **Resolve U-5** and record it as ADR-015 in `specs/001-notification-management-core/research.md`: are simulated provider failures driven by static configuration or a per-request directive? A per-request directive puts a test affordance in the production contract — decide deliberately
-- [ ] T074 [P] [US4] Implement `SimulatedEmailProvider` and `SimulatedSmsProvider` in `src/main/java/com/notification/channel/`, both implementing `ChannelProviderPort` and able to emit all six classifications deterministically, per the U-5 answer (depends on T073)
-- [ ] T075 [P] [US4] Implement the outbox poller with `SELECT … FOR UPDATE SKIP LOCKED` in `src/main/java/com/notification/worker/OutboxPoller.java`
-- [ ] T076 [US4] Implement delivery claiming with a lease in `src/main/java/com/notification/persistence/JdbcDeliveryRepository.java` using `FOR UPDATE SKIP LOCKED` (depends on T042)
-- [ ] T077 [US4] Implement `DeliveryProcessingService` in `src/main/java/com/notification/application/DeliveryProcessingService.java`, driving one attempt through the state machine (depends on T017, T074, T076)
-- [ ] T078 [US4] Implement the **pre-attempt eligibility check** in `src/main/java/com/notification/application/DeliveryProcessingService.java`, evaluating both `notBefore` and `expiresAt` immediately before every attempt, not only at first processing (FR-033) — a delivery can cross either boundary while waiting in backoff
-- [ ] T079 [US4] Implement `DeliveryWorker` in `src/main/java/com/notification/worker/DeliveryWorker.java`, invocable directly so tests need no real waiting (Principle VI)
-- [ ] T080 [US4] Implement the guard rejecting any attempt on a channel absent from the persisted routing decision in `src/main/java/com/notification/application/DeliveryProcessingService.java` (FR-035) (depends on T065)
-- [ ] T081 [US4] Persist `delivery_attempt` rows with outcome and bounded, sanitised diagnostic in `src/main/java/com/notification/persistence/JdbcDeliveryAttemptRepository.java` — adapters must not propagate a provider's raw response body, which may echo submitted content
-- [ ] T082 [US4] Record `DELIVERY_QUEUED`, `DELIVERY_ATTEMPTED`, `DELIVERY_SUCCEEDED` and `DELIVERY_EXPIRED` audit events from `src/main/java/com/notification/application/DeliveryProcessingService.java` (depends on T026)
+- [X] T073 [US4] **Resolve U-5** and record it as ADR-015 in `specs/001-notification-management-core/research.md`: are simulated provider failures driven by static configuration or a per-request directive? A per-request directive puts a test affordance in the production contract — decide deliberately
+- [X] T074 [P] [US4] Implement `SimulatedEmailProvider` and `SimulatedSmsProvider` in `src/main/java/com/notification/channel/`, both implementing `ChannelProviderPort` and able to emit all six classifications deterministically, per the U-5 answer (depends on T073)
+- [X] T075 [P] [US4] Implement the outbox poller with `SELECT … FOR UPDATE SKIP LOCKED` in `src/main/java/com/notification/worker/OutboxPoller.java`
+- [X] T076 [US4] Implement delivery claiming with a lease in `src/main/java/com/notification/persistence/JdbcDeliveryRepository.java` using `FOR UPDATE SKIP LOCKED` (depends on T042)
+- [X] T077 [US4] Implement `DeliveryProcessingService` in `src/main/java/com/notification/application/DeliveryProcessingService.java`, driving one attempt through the state machine (depends on T017, T074, T076)
+- [X] T078 [US4] Implement the **pre-attempt eligibility check** in `src/main/java/com/notification/application/DeliveryProcessingService.java`, evaluating both `notBefore` and `expiresAt` immediately before every attempt, not only at first processing (FR-033) — a delivery can cross either boundary while waiting in backoff
+- [X] T079 [US4] Implement `DeliveryWorker` in `src/main/java/com/notification/worker/DeliveryWorker.java`, invocable directly so tests need no real waiting (Principle VI)
+- [X] T080 [US4] Implement the guard rejecting any attempt on a channel absent from the persisted routing decision in `src/main/java/com/notification/application/DeliveryProcessingService.java` (FR-035) (depends on T065)
+- [X] T081 [US4] Persist `delivery_attempt` rows with outcome and bounded, sanitised diagnostic in `src/main/java/com/notification/persistence/JdbcDeliveryAttemptRepository.java` — adapters must not propagate a provider's raw response body, which may echo submitted content
+- [X] T082 [US4] Record `DELIVERY_QUEUED`, `DELIVERY_ATTEMPTED`, `DELIVERY_SUCCEEDED` and `DELIVERY_EXPIRED` audit events from `src/main/java/com/notification/application/DeliveryProcessingService.java` (depends on T026)
 
 **Checkpoint**: Notifications are delivered end to end. Retry is not yet implemented — failures are terminal.
 

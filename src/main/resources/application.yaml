@@ -46,9 +46,18 @@ notification:
     multiplier: 2
     ceiling: PT60S
     jitter-ratio: 0.2
+  worker:
+    poll-interval-ms: 1000
   channel:
     connect-timeout: PT5S
     read-timeout: PT10S
+    # ADR-015 (U-5): simulated failures are configured, never carried in a request. Leave empty
+    # for successful delivery; set fail-with to demonstrate any of the six classifications.
+    # fail-first-attempts shows retry-then-success without a code change.
+    simulate: {}
+    #  EMAIL:
+    #    fail-with: TRANSIENT_PROVIDER_FAILURE
+    #    fail-first-attempts: 2
   content:
     max-payload-bytes: 65536
   routing:
