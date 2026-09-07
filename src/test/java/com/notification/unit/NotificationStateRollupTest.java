@@ -30,6 +30,21 @@ class NotificationStateRollupTest {
     }
 
     @Test
+    void rule2a_allPending_isAcceptedNotInProgress() {
+        // Found by StatusImmediacyTest: a freshly accepted notification had nothing attempted yet,
+        // but the original rule 2 reported IN_PROGRESS, leaving ACCEPTED effectively unreachable.
+        assertThat(NotificationState.rollup(List.of(DeliveryState.PENDING, DeliveryState.PENDING), false))
+                .isEqualTo(NotificationState.ACCEPTED);
+    }
+
+    @Test
+    void rule2b_onePendingOneQueued_isInProgress() {
+        // Once ANY delivery has moved past PENDING, work has genuinely begun.
+        assertThat(NotificationState.rollup(List.of(DeliveryState.PENDING, DeliveryState.QUEUED), false))
+                .isEqualTo(NotificationState.IN_PROGRESS);
+    }
+
+    @Test
     void rule2_anyNonTerminal_isInProgress() {
         assertThat(NotificationState.rollup(List.of(DeliveryState.DELIVERED, DeliveryState.QUEUED), false))
                 .isEqualTo(NotificationState.IN_PROGRESS);

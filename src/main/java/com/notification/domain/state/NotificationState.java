@@ -33,7 +33,15 @@ public enum NotificationState {
             return notificationExpired ? EXPIRED : ACCEPTED;
         }
 
-        // Rule 2: still working.
+        // Rule 2a: accepted, nothing started yet. Every delivery is still PENDING, meaning the
+        // outbox has not been drained. Without this, ACCEPTED would be reachable only when
+        // routing selected no channel at all — which is really UNDELIVERABLE territory — and a
+        // notification would report IN_PROGRESS before any work had begun.
+        if (deliveryStates.stream().allMatch(s -> s == DeliveryState.PENDING)) {
+            return ACCEPTED;
+        }
+
+        // Rule 2b: at least one delivery has moved past PENDING and something is unfinished.
         if (deliveryStates.stream().anyMatch(s -> !s.isTerminal())) {
             return IN_PROGRESS;
         }

@@ -216,7 +216,12 @@ listed is illegal and throws (Principle IV).
 Evaluated over the notification's deliveries, first matching rule wins:
 
 1. No deliveries exist and routing selected nothing → `EXPIRED` if expired, else `ACCEPTED`.
-2. Any delivery non-terminal → `IN_PROGRESS`.
+2a. All deliveries `PENDING` → `ACCEPTED`. *(Added 2026-09-07 during implementation. Under the
+   original rule 2 a freshly accepted notification reported `IN_PROGRESS` before anything had been
+   attempted, which left `ACCEPTED` reachable only via rule 1 — the empty-routing case that is
+   really `UNDELIVERABLE` territory. Design-derived, and changeable as such; the source names no
+   states at all.)*
+2b. Any delivery non-terminal → `IN_PROGRESS`.
 3. All terminal and all `DELIVERED` → `COMPLETED`.
 4. All terminal and all `EXPIRED` → `EXPIRED`.
 5. All terminal, at least one `DELIVERED`, at least one not → `PARTIALLY_FAILED`.

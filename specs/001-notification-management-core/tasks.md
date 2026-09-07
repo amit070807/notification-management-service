@@ -157,17 +157,17 @@ required elements are present, including one row per recipient-and-channel combi
 
 ### Tests for User Story 2 ⚠️ WRITE FIRST, MUST FAIL
 
-- [ ] T048 [P] [US2] Contract test for `GET /notifications/{id}/status` 200 and 404 against `contracts/openapi.yaml` in `src/test/java/com/notification/contract/NotificationStatusContractTest.java`
-- [ ] T049 [P] [US2] Integration test asserting a just-accepted notification is found immediately and reports a not-yet-delivered state rather than 404 (FR-015, SC-002) in `src/test/java/com/notification/integration/StatusImmediacyTest.java`
-- [ ] T050 [P] [US2] Integration test asserting 2 recipients × 2 channels yields 4 independently varying delivery entries (FR-012, SC-003) in `src/test/java/com/notification/integration/StatusMatrixTest.java`
-- [ ] T051 [P] [US2] Integration test asserting an unknown server-issued identity returns 404, distinguishable from a known notification with no completed deliveries (FR-018) in `src/test/java/com/notification/integration/StatusUnknownIdTest.java`
+- [X] T048 [P] [US2] Contract test for `GET /notifications/{id}/status` 200 and 404 against `contracts/openapi.yaml` in `src/test/java/com/notification/contract/NotificationStatusContractTest.java`
+- [X] T049 [P] [US2] Integration test asserting a just-accepted notification is found immediately and reports a not-yet-delivered state rather than 404 (FR-015, SC-002) in `src/test/java/com/notification/integration/StatusImmediacyTest.java`
+- [X] T050 [P] [US2] Integration test asserting 2 recipients × 2 channels yields 4 independently varying delivery entries (FR-012, SC-003) in `src/test/java/com/notification/integration/StatusMatrixTest.java`
+- [X] T051 [P] [US2] Integration test asserting an unknown server-issued identity returns 404, distinguishable from a known notification with no completed deliveries (FR-018) in `src/test/java/com/notification/integration/StatusUnknownIdTest.java`
 
 ### Implementation for User Story 2
 
-- [ ] T052 [P] [US2] Implement the status query DTOs and mapper in `src/main/java/com/notification/api/mapper/StatusMapper.java`, asserting the content payload is never joined into the response (FR-056)
-- [ ] T053 [US2] Implement `StatusQueryService` in `src/main/java/com/notification/application/StatusQueryService.java`, computing the overall state via the rollup function from T019 rather than by scanning audit (FR-014, FR-016)
-- [ ] T054 [US2] Implement the status read queries in `src/main/java/com/notification/persistence/JdbcStatusRepository.java`
-- [ ] T055 [US2] Implement `StatusController` in `src/main/java/com/notification/api/StatusController.java` (depends on T053)
+- [X] T052 [P] [US2] Implement the status query DTOs and mapper in `src/main/java/com/notification/api/mapper/StatusMapper.java`, asserting the content payload is never joined into the response (FR-056)
+- [X] T053 [US2] Implement `StatusQueryService` in `src/main/java/com/notification/application/StatusQueryService.java`, computing the overall state via the rollup function from T019 rather than by scanning audit (FR-014, FR-016)
+- [X] T054 [US2] Implement the status read queries in `src/main/java/com/notification/persistence/JdbcStatusRepository.java`
+- [X] T055 [US2] Implement `StatusController` in `src/main/java/com/notification/api/StatusController.java` (depends on T053)
 
 **Checkpoint**: US1 and US2 together form the smallest demonstrable end-to-end slice.
 

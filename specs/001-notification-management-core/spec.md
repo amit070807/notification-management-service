@@ -898,7 +898,9 @@ unconfirmed at implementation time.
   make "bounded" testable; any confirmed figures replace them without changing any requirement.
 - **[A ← G-09]** Proposed delivery states: pending, queued, in progress, delivered, failed
   (with classification), retry scheduled, exhausted, expired, undeliverable. Proposed overall
-  states: accepted, in progress, completed, partially failed, failed, expired. Both sets are
+  states: accepted, in progress, completed, partially failed, failed, expired. *(Rollup refined
+  2026-09-07: all-pending rolls up to accepted, so "accepted" means nothing has been attempted
+  yet rather than being reachable only when routing selected nothing.)* Both sets are
   documented per §4.2's explicit licence to use a different state model.
 - **[A ← G-10]** Callers of both capabilities are authenticated; the notification capability is
   not assumed to be openly reachable. The prototype's specific arrangement is a limitation to

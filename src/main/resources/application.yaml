@@ -12,6 +12,11 @@ spring:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:notifications}
     username: ${POSTGRES_USER:notifications}
     password: ${POSTGRES_PASSWORD}
+  # Optional response fields are omitted rather than serialised as null. The contract marks
+  # lastFailureClassification and nextAttemptAt as optional, and a null does not satisfy an
+  # enum schema — the contract test caught this.
+  jackson:
+    default-property-inclusion: non_null
   flyway:
     enabled: true
     locations: classpath:db/migration
