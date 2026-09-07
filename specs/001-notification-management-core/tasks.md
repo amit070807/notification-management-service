@@ -121,25 +121,25 @@ the offending element named. Requires no delivery machinery.
 
 ### Tests for User Story 1 ⚠️ WRITE FIRST, MUST FAIL
 
-- [ ] T032 [P] [US1] Contract test for `POST /notifications` 202 and 400 responses against `contracts/openapi.yaml` in `src/test/java/com/notification/contract/SubmitNotificationContractTest.java`
-- [ ] T033 [P] [US1] Integration test asserting the acceptance response reports no delivery outcome and no provider was called (FR-029, SC-004) in `src/test/java/com/notification/integration/SubmissionAcceptanceTest.java`
-- [ ] T034 [P] [US1] Integration test asserting a single rejection names all three offending fields at once and creates no notification, delivery or routing decision (FR-004, FR-007) in `src/test/java/com/notification/integration/SubmissionRejectionTest.java`
-- [ ] T035 [P] [US1] Integration test asserting duplicate `clientNotificationId` yields two accepted notifications with different server-issued ids and independent deliveries (FR-008b, D4) in `src/test/java/com/notification/integration/DuplicateSubmissionTest.java`
-- [ ] T036 [P] [US1] Integration test asserting all six validation rules from data-model.md reject correctly, including `notBefore >= expiresAt` and an already-past `expiresAt` (FR-003d, FR-003e) in `src/test/java/com/notification/integration/SubmissionValidationTest.java`
+- [X] T032 [P] [US1] Contract test for `POST /notifications` 202 and 400 responses against `contracts/openapi.yaml` in `src/test/java/com/notification/contract/SubmitNotificationContractTest.java`
+- [X] T033 [P] [US1] Integration test asserting the acceptance response reports no delivery outcome and no provider was called (FR-029, SC-004) in `src/test/java/com/notification/integration/SubmissionAcceptanceTest.java`
+- [X] T034 [P] [US1] Integration test asserting a single rejection names all three offending fields at once and creates no notification, delivery or routing decision (FR-004, FR-007) in `src/test/java/com/notification/integration/SubmissionRejectionTest.java`
+- [X] T035 [P] [US1] Integration test asserting duplicate `clientNotificationId` yields two accepted notifications with different server-issued ids and independent deliveries (FR-008b, D4) in `src/test/java/com/notification/integration/DuplicateSubmissionTest.java`
+- [X] T036 [P] [US1] Integration test asserting all six validation rules from data-model.md reject correctly, including `notBefore >= expiresAt` and an already-past `expiresAt` (FR-003d, FR-003e) in `src/test/java/com/notification/integration/SubmissionValidationTest.java`
 
 ### Implementation for User Story 1
 
-- [ ] T037 [P] [US1] Implement the `Notification`, `Recipient` and `ContentRef` domain records in `src/main/java/com/notification/domain/model/` — recipient is an **opaque reference only**, with no address field (D5)
-- [ ] T038 [P] [US1] Implement `RoutingDecision` and `RoutingChannelOutcome` domain records with reason codes in `src/main/java/com/notification/domain/routing/`
-- [ ] T039 [P] [US1] Implement `Delivery` domain record in `src/main/java/com/notification/domain/model/Delivery.java`
-- [ ] T040 [US1] Implement the identity `ChannelRouter` in `src/main/java/com/notification/domain/routing/ChannelRouter.java` as a pure function of `(RoutingRequest, RoutingPolicy)` — no clock, no randomness, no I/O (depends on T038)
-- [ ] T041 [P] [US1] Implement the submission DTOs and mappers in `src/main/java/com/notification/api/mapper/`, per the OpenAPI approach chosen in T025
-- [ ] T042 [P] [US1] Implement the `JdbcClient` notification, content, recipient and delivery repositories in `src/main/java/com/notification/persistence/`
-- [ ] T043 [P] [US1] Implement the `JdbcClient` outbox repository in `src/main/java/com/notification/persistence/JdbcOutboxRepository.java`
-- [ ] T044 [US1] Implement `SubmissionService.accept()` in `src/main/java/com/notification/application/SubmissionService.java` as **one `@Transactional` unit** writing notification, content, recipients, routing decision, deliveries, audit events and the outbox row — no provider I/O on this thread (Principle II) (depends on T037–T043)
-- [ ] T045 [US1] Implement Jakarta Validation constraints for all six boundary rules in the request DTO in `src/main/java/com/notification/api/dto/SubmitNotificationRequest.java`, so rejection is structural rather than procedural (depends on T041)
-- [ ] T046 [US1] Implement `NotificationController.submit()` returning 202 with a `Location` header in `src/main/java/com/notification/api/NotificationController.java` (depends on T044, T045)
-- [ ] T047 [US1] Record `NOTIFICATION_ACCEPTED` and `NOTIFICATION_REJECTED` audit events from `src/main/java/com/notification/application/SubmissionService.java` and `src/main/java/com/notification/api/ApiExceptionHandler.java` (depends on T026, T044)
+- [X] T037 [P] [US1] Implement the `Notification`, `Recipient` and `ContentRef` domain records in `src/main/java/com/notification/domain/model/` — recipient is an **opaque reference only**, with no address field (D5)
+- [X] T038 [P] [US1] Implement `RoutingDecision` and `RoutingChannelOutcome` domain records with reason codes in `src/main/java/com/notification/domain/routing/`
+- [X] T039 [P] [US1] Implement `Delivery` domain record in `src/main/java/com/notification/domain/model/Delivery.java`
+- [X] T040 [US1] Implement the identity `ChannelRouter` in `src/main/java/com/notification/domain/routing/ChannelRouter.java` as a pure function of `(RoutingRequest, RoutingPolicy)` — no clock, no randomness, no I/O (depends on T038)
+- [X] T041 [P] [US1] Implement the submission DTOs and mappers in `src/main/java/com/notification/api/mapper/`, per the OpenAPI approach chosen in T025
+- [X] T042 [P] [US1] Implement the `JdbcClient` notification, content, recipient and delivery repositories in `src/main/java/com/notification/persistence/`
+- [X] T043 [P] [US1] Implement the `JdbcClient` outbox repository in `src/main/java/com/notification/persistence/JdbcOutboxRepository.java`
+- [X] T044 [US1] Implement `SubmissionService.accept()` in `src/main/java/com/notification/application/SubmissionService.java` as **one `@Transactional` unit** writing notification, content, recipients, routing decision, deliveries, audit events and the outbox row — no provider I/O on this thread (Principle II) (depends on T037–T043)
+- [X] T045 [US1] Implement Jakarta Validation constraints for all six boundary rules in the request DTO in `src/main/java/com/notification/api/dto/SubmitNotificationRequest.java`, so rejection is structural rather than procedural (depends on T041)
+- [X] T046 [US1] Implement `NotificationController.submit()` returning 202 with a `Location` header in `src/main/java/com/notification/api/NotificationController.java` (depends on T044, T045)
+- [X] T047 [US1] Record `NOTIFICATION_ACCEPTED` and `NOTIFICATION_REJECTED` audit events from `src/main/java/com/notification/application/SubmissionService.java` and `src/main/java/com/notification/api/ApiExceptionHandler.java` (depends on T026, T044)
 
 **Checkpoint**: Notifications can be submitted, validated, accepted and durably recorded. Nothing is delivered yet.
 

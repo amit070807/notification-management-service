@@ -331,18 +331,24 @@ components:
         detail: { type: string }
 
     ValidationProblem:
-      allOf:
-        - $ref: '#/components/schemas/Problem'
-        - type: object
-          required: [errors]
-          properties:
-            errors:
-              type: array
-              description: Every offending field, not just the first (FR-004).
-              items:
-                type: object
-                required: [field, code, message]
-                properties:
-                  field: { type: string }
-                  code: { type: string }
-                  message: { type: string }
+      # Declared standalone rather than composed with allOf. An allOf against Problem is
+      # rejected by strict validators, which read the Problem branch as disallowing the
+      # extra `errors` property. Flattening removes the ambiguity - found by the contract
+      # test, which is the point of having one.
+      type: object
+      required: [type, title, status, errors]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        errors:
+          type: array
+          description: Every offending field, not just the first (FR-004).
+          items:
+            type: object
+            required: [field, code, message]
+            properties:
+              field: { type: string }
+              code: { type: string }
+              message: { type: string }

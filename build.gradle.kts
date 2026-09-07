@@ -80,6 +80,12 @@ tasks.withType<Test> {
     // Principle VI: tests are deterministic. Fail fast on the ordering assumptions
     // that make a suite flaky.
     systemProperty("junit.jupiter.execution.order.random.seed", "1")
+}
+
+// Only the main test task produces the coverage report. Attaching this to every Test task
+// made `archTest` pull in jacocoTestReport, which depends on `test` — so running the
+// architecture gate alone ran the entire suite, defeating the point of having it separable.
+tasks.test {
     finalizedBy(tasks.jacocoTestReport)
 }
 
