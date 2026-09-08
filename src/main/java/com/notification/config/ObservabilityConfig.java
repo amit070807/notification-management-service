@@ -43,6 +43,11 @@ public class ObservabilityConfig {
         return new NotificationMetrics(registry);
     }
 
+    @Bean
+    public com.notification.domain.retry.RetryPolicy retryPolicy(RetryProperties properties) {
+        return properties.toPolicy();
+    }
+
     /**
      * Counters required by the constitution's Observability section.
      *

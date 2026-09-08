@@ -28,7 +28,9 @@ public class ChannelConfig {
                                     new SimulatedChannelProvider(
                                             channel,
                                             sim == null ? null : sim.failWith(),
-                                            sim == null ? 0 : sim.firstAttempts());
+                                            sim == null ? 0 : sim.firstAttempts(),
+                                            properties.connectTimeout(),
+                                            properties.readTimeout());
                         })
                 .toList();
     }

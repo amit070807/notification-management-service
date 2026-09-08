@@ -31,6 +31,8 @@ public class SimulatedChannelProvider implements ChannelProviderPort {
     private final Channel channel;
     private final FailureClassification simulatedFailure;
     private final int failFirstAttempts;
+    private final java.time.Duration connectTimeout;
+    private final java.time.Duration readTimeout;
     private final java.util.concurrent.atomic.AtomicInteger callCount =
             new java.util.concurrent.atomic.AtomicInteger();
 
@@ -39,10 +41,29 @@ public class SimulatedChannelProvider implements ChannelProviderPort {
      * @param failFirstAttempts fail only the first N calls, then succeed; 0 means always fail when
      *     a classification is configured. Lets a demo show retry-then-success without code changes.
      */
-    public SimulatedChannelProvider(Channel channel, FailureClassification simulatedFailure, int failFirstAttempts) {
+    public SimulatedChannelProvider(
+            Channel channel,
+            FailureClassification simulatedFailure,
+            int failFirstAttempts,
+            java.time.Duration connectTimeout,
+            java.time.Duration readTimeout) {
         this.channel = channel;
         this.simulatedFailure = simulatedFailure;
         this.failFirstAttempts = failFirstAttempts;
+        // T094: the constitution requires every outbound provider call to be bounded. A real
+        // adapter applies these to its HTTP client; a simulated one carries them so the contract
+        // a real adapter must honour is visible here rather than discovered later. Without a
+        // timeout the TIMEOUT classification of source 4.5 could never be produced at all.
+        this.connectTimeout = connectTimeout == null ? java.time.Duration.ofSeconds(5) : connectTimeout;
+        this.readTimeout = readTimeout == null ? java.time.Duration.ofSeconds(10) : readTimeout;
+    }
+
+    public java.time.Duration connectTimeout() {
+        return connectTimeout;
+    }
+
+    public java.time.Duration readTimeout() {
+        return readTimeout;
     }
 
     @Override

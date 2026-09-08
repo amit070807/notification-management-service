@@ -254,23 +254,23 @@ outcome — with no dependence on real timing.
 
 ### Tests for User Story 5 ⚠️ WRITE FIRST, MUST FAIL
 
-- [ ] T083 [P] [US5] Integration test per failure classification asserting the retry decision, attempt count and terminal state for all six (SC-005) in `src/test/java/com/notification/integration/FailureClassificationBehaviourTest.java`
-- [ ] T084 [P] [US5] Integration test asserting zero deliveries exceed the configured maximum attempts across a full run (FR-038, SC-006) in `src/test/java/com/notification/integration/RetryBoundTest.java`
-- [ ] T085 [P] [US5] Integration test asserting `EXHAUSTED` is distinguishable from a first-attempt `FAILED` (FR-044) in `src/test/java/com/notification/integration/ExhaustedVsFailedTest.java`
-- [ ] T086 [P] [US5] **Expiry-outranks-budget test**: put a delivery in backoff, advance the clock past `expiresAt`, run the worker, assert `EXPIRED` — not `FAILED`, not `EXHAUSTED` — with budget remaining (FR-034) in `src/test/java/com/notification/integration/ExpiryOutranksRetryTest.java`
-- [ ] T087 [P] [US5] Integration test asserting an unclassifiable provider outcome becomes `UNKNOWN`, is retried, and is never recorded as success (FR-041) in `src/test/java/com/notification/integration/UnknownOutcomeTest.java`
-- [ ] T088 [P] [US5] Integration test asserting `AUTH_ERROR` is terminal **and** raises an operational signal rather than being absorbed as a recipient fault (FR-042) in `src/test/java/com/notification/integration/AuthErrorSignalTest.java`
+- [X] T083 [P] [US5] Integration test per failure classification asserting the retry decision, attempt count and terminal state for all six (SC-005) in `src/test/java/com/notification/integration/FailureClassificationBehaviourTest.java`
+- [X] T084 [P] [US5] Integration test asserting zero deliveries exceed the configured maximum attempts across a full run (FR-038, SC-006) in `src/test/java/com/notification/integration/RetryBoundTest.java`
+- [X] T085 [P] [US5] Integration test asserting `EXHAUSTED` is distinguishable from a first-attempt `FAILED` (FR-044) in `src/test/java/com/notification/integration/ExhaustedVsFailedTest.java`
+- [X] T086 [P] [US5] **Expiry-outranks-budget test**: put a delivery in backoff, advance the clock past `expiresAt`, run the worker, assert `EXPIRED` — not `FAILED`, not `EXHAUSTED` — with budget remaining (FR-034) in `src/test/java/com/notification/integration/ExpiryOutranksRetryTest.java`
+- [X] T087 [P] [US5] Integration test asserting an unclassifiable provider outcome becomes `UNKNOWN`, is retried, and is never recorded as success (FR-041) in `src/test/java/com/notification/integration/UnknownOutcomeTest.java`
+- [X] T088 [P] [US5] Integration test asserting `AUTH_ERROR` is terminal **and** raises an operational signal rather than being absorbed as a recipient fault (FR-042) in `src/test/java/com/notification/integration/AuthErrorSignalTest.java`
 
 ### Implementation for User Story 5
 
-- [ ] T089 [P] [US5] Implement `RetryPolicy` in `src/main/java/com/notification/domain/retry/RetryPolicy.java` as a pure function returning the next attempt delay, with jitter drawn from `RandomPort` so the domain stays deterministic
-- [ ] T090 [P] [US5] Bind max attempts, base delay, factor, ceiling and jitter to configuration properties in `src/main/java/com/notification/config/RetryProperties.java` and `application.yaml` (constitution defaults: 5 attempts, 1s base, factor 2, 60s ceiling, ±20%)
-- [ ] T091 [US5] Implement classification mapping in `src/main/java/com/notification/channel/SimulatedEmailProvider.java` and `SimulatedSmsProvider.java` so every provider outcome maps into the closed enum with no unmapped pass-through (FR-037) (depends on T074)
-- [ ] T092 [US5] Implement retry scheduling and the `RETRY_SCHEDULED` transition in `src/main/java/com/notification/application/DeliveryProcessingService.java`, setting `next_attempt_at` (depends on T077, T089)
-- [ ] T093 [US5] Implement budget exhaustion producing `EXHAUSTED`, distinct from `FAILED`, in `src/main/java/com/notification/application/DeliveryProcessingService.java` (depends on T092)
-- [ ] T094 [US5] Implement provider connect and read timeouts in `src/main/java/com/notification/channel/` adapters and bind them in `src/main/java/com/notification/config/ChannelProperties.java` so `TIMEOUT` is producible at all (constitution Observability — an unbounded provider call is a defect)
-- [ ] T095 [US5] Implement the operational signal for `AUTH_ERROR` as a metric and a WARN-level structured log in `src/main/java/com/notification/application/DeliveryProcessingService.java` (FR-042)
-- [ ] T096 [US5] Record `DELIVERY_FAILED`, `RETRY_SCHEDULED` and `RETRY_BUDGET_EXHAUSTED` audit events from `src/main/java/com/notification/application/DeliveryProcessingService.java` (depends on T026)
+- [X] T089 [P] [US5] Implement `RetryPolicy` in `src/main/java/com/notification/domain/retry/RetryPolicy.java` as a pure function returning the next attempt delay, with jitter drawn from `RandomPort` so the domain stays deterministic
+- [X] T090 [P] [US5] Bind max attempts, base delay, factor, ceiling and jitter to configuration properties in `src/main/java/com/notification/config/RetryProperties.java` and `application.yaml` (constitution defaults: 5 attempts, 1s base, factor 2, 60s ceiling, ±20%)
+- [X] T091 [US5] Implement classification mapping in `src/main/java/com/notification/channel/SimulatedEmailProvider.java` and `SimulatedSmsProvider.java` so every provider outcome maps into the closed enum with no unmapped pass-through (FR-037) (depends on T074)
+- [X] T092 [US5] Implement retry scheduling and the `RETRY_SCHEDULED` transition in `src/main/java/com/notification/application/DeliveryProcessingService.java`, setting `next_attempt_at` (depends on T077, T089)
+- [X] T093 [US5] Implement budget exhaustion producing `EXHAUSTED`, distinct from `FAILED`, in `src/main/java/com/notification/application/DeliveryProcessingService.java` (depends on T092)
+- [X] T094 [US5] Implement provider connect and read timeouts in `src/main/java/com/notification/channel/` adapters and bind them in `src/main/java/com/notification/config/ChannelProperties.java` so `TIMEOUT` is producible at all (constitution Observability — an unbounded provider call is a defect)
+- [X] T095 [US5] Implement the operational signal for `AUTH_ERROR` as a metric and a WARN-level structured log in `src/main/java/com/notification/application/DeliveryProcessingService.java` (FR-042)
+- [X] T096 [US5] Record `DELIVERY_FAILED`, `RETRY_SCHEDULED` and `RETRY_BUDGET_EXHAUSTED` audit events from `src/main/java/com/notification/application/DeliveryProcessingService.java` (depends on T026)
 
 **Checkpoint**: Bounded retry works, every failure kind behaves per the taxonomy, and expiry outranks the budget.
 

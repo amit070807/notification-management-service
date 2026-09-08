@@ -21,7 +21,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @SpringBootTest
 @Testcontainers
 @ActiveProfiles("test")
-@org.springframework.context.annotation.Import(TestClockConfig.class)
+@org.springframework.context.annotation.Import({TestClockConfig.class, TestChannelConfig.class})
 public abstract class PostgresIntegrationTest {
 
     @SuppressWarnings("resource")
@@ -34,6 +34,22 @@ public abstract class PostgresIntegrationTest {
 
     static {
         POSTGRES.start();
+    }
+
+    /**
+     * The scripted providers are a context-wide singleton, so a script set by one test would
+     * otherwise leak into every test that runs after it. Resetting here rather than in a subclass
+     * means no test can forget: Principle VI forbids reliance on execution order, and a shared
+     * mutable fixture is the most common way that creeps back in.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private TestChannelConfig.Scripts sharedScripts;
+
+    @org.junit.jupiter.api.BeforeEach
+    void resetSharedChannelScripts() {
+        if (sharedScripts != null) {
+            sharedScripts.resetAll();
+        }
     }
 
     @DynamicPropertySource

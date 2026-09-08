@@ -5,7 +5,10 @@ import com.notification.audit.Masking;
 import com.notification.audit.payload.AuditPayload;
 import com.notification.domain.model.*;
 import com.notification.domain.port.*;
+import com.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.notification.domain.retry.FailureClassification;
+import com.notification.domain.retry.RetryPolicy;
+import com.notification.domain.retry.Retryability;
 import com.notification.domain.state.DeliveryState;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -27,6 +30,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class DeliveryProcessingService {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeliveryProcessingService.class);
+
     private final DeliveryRepositoryPort deliveries;
     private final NotificationRepositoryPort notifications;
     private final Map<Channel, ChannelProviderPort> providers;
@@ -34,6 +40,9 @@ public class DeliveryProcessingService {
     private final ClockPort clock;
     private final IdPort ids;
     private final JdbcClient jdbc;
+    private final RetryPolicy retryPolicy;
+    private final RandomPort random;
+    private final NotificationMetrics metrics;
 
     public DeliveryProcessingService(
             DeliveryRepositoryPort deliveries,
@@ -42,7 +51,10 @@ public class DeliveryProcessingService {
             AuditRecorder audit,
             ClockPort clock,
             IdPort ids,
-            JdbcClient jdbc) {
+            JdbcClient jdbc,
+            RetryPolicy retryPolicy,
+            RandomPort random,
+            NotificationMetrics metrics) {
         this.deliveries = deliveries;
         this.notifications = notifications;
         this.providers =
@@ -51,6 +63,9 @@ public class DeliveryProcessingService {
         this.clock = clock;
         this.ids = ids;
         this.jdbc = jdbc;
+        this.retryPolicy = retryPolicy;
+        this.random = random;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -142,20 +157,112 @@ public class DeliveryProcessingService {
                             delivery.channel().name(),
                             attemptNumber));
         } else {
-            // Phase 6: every failure is terminal. Phase 7 introduces bounded retry.
-            transition(inProgress, DeliveryState.FAILED, finished, outcome.classification(), attemptNumber);
+            handleFailure(inProgress, notification, outcome, attemptNumber, finished);
+        }
+    }
+
+    /**
+     * T091-T093, T095 — the retry decision.
+     *
+     * <p>Retryability is read from {@link Retryability}, the single place the partition is
+     * declared, so the worker cannot drift from the unit truth table.
+     */
+    private void handleFailure(
+            Delivery delivery,
+            Notification notification,
+            DeliveryOutcome outcome,
+            int attemptNumber,
+            Instant now) {
+
+        FailureClassification classification = outcome.classification();
+        metrics.attemptFailed(classification.name(), delivery.channel().name());
+
+        audit.record(
+                notification.id(),
+                notification.correlationId(),
+                AuditEventType.DELIVERY_FAILED,
+                new AuditPayload.DeliveryFailed(
+                        delivery.id().toString(),
+                        Masking.mask(delivery.recipientRef().value()),
+                        delivery.channel().name(),
+                        attemptNumber,
+                        classification.name(),
+                        outcome.diagnostic()));
+
+        // FR-042: a configuration fault, not a recipient fault. Surfaced separately so it is not
+        // absorbed into the ordinary failure count, where an outage affecting every recipient
+        // would look like ordinary attrition.
+        if (Retryability.raisesOperationalSignal(classification)) {
+            metrics.authErrorRaised(delivery.channel().name());
+            log.warn(
+                    "Delivery failed with {} on channel {} - this indicates a service configuration"
+                            + " fault rather than a recipient problem; retrying cannot help until it is fixed",
+                    classification,
+                    delivery.channel());
+        }
+
+        boolean retryable = Retryability.isRetryable(classification);
+        boolean budgetRemains = retryPolicy.hasBudgetAfter(attemptNumber);
+
+        if (retryable && budgetRemains) {
+            Instant nextAttempt = now.plus(retryPolicy.delayAfter(attemptNumber, random.nextJitterFactor()));
+            scheduleRetry(delivery, classification, attemptNumber, nextAttempt, now);
+            metrics.retryScheduled(delivery.channel().name());
             audit.record(
                     notification.id(),
                     notification.correlationId(),
-                    AuditEventType.DELIVERY_FAILED,
-                    new AuditPayload.DeliveryFailed(
+                    AuditEventType.RETRY_SCHEDULED,
+                    new AuditPayload.RetryScheduled(
                             delivery.id().toString(),
-                            Masking.mask(delivery.recipientRef().value()),
                             delivery.channel().name(),
                             attemptNumber,
-                            outcome.classification().name(),
-                            outcome.diagnostic()));
+                            nextAttempt.toString(),
+                            classification.name()));
+            return;
         }
+
+        if (retryable) {
+            // Budget spent. EXHAUSTED, not FAILED: a flaky provider and an outright rejection
+            // mean different things operationally (FR-044).
+            transition(delivery, DeliveryState.EXHAUSTED, now, classification, attemptNumber);
+            metrics.deliveryTerminal(DeliveryState.EXHAUSTED.name(), delivery.channel().name());
+            audit.record(
+                    notification.id(),
+                    notification.correlationId(),
+                    AuditEventType.RETRY_BUDGET_EXHAUSTED,
+                    new AuditPayload.RetryBudgetExhausted(
+                            delivery.id().toString(),
+                            delivery.channel().name(),
+                            attemptNumber,
+                            classification.name()));
+            return;
+        }
+
+        // Non-retryable: stop immediately rather than spending budget on something that cannot
+        // succeed (FR-040).
+        transition(delivery, DeliveryState.FAILED, now, classification, attemptNumber);
+        metrics.deliveryTerminal(DeliveryState.FAILED.name(), delivery.channel().name());
+    }
+
+    private void scheduleRetry(
+            Delivery delivery,
+            FailureClassification classification,
+            int attemptNumber,
+            Instant nextAttempt,
+            Instant now) {
+        delivery.state().checkTransitionTo(DeliveryState.RETRY_SCHEDULED);
+        deliveries.update(
+                new Delivery(
+                        delivery.id(),
+                        delivery.notificationId(),
+                        delivery.recipientId(),
+                        delivery.recipientRef(),
+                        delivery.channel(),
+                        DeliveryState.RETRY_SCHEDULED,
+                        attemptNumber,
+                        nextAttempt,
+                        classification,
+                        now));
     }
 
     private void expire(Delivery delivery, Notification notification, Instant now) {
