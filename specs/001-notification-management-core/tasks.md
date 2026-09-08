@@ -289,17 +289,17 @@ appears anywhere.
 
 ### Tests for User Story 6 ⚠️ WRITE FIRST, MUST FAIL
 
-- [ ] T097 [P] [US6] Integration test asserting one full run produces **all 10 event types** — the 8 from §4.9 plus `DELIVERY_EXPIRED` and `RETRY_BUDGET_EXHAUSTED` (FR-046, FR-053, SC-008) in `src/test/java/com/notification/integration/AuditCompletenessTest.java`
-- [ ] T098 [P] [US6] Integration test asserting the complete history is retrievable by `correlationId` alone and every record is timestamped (FR-048, FR-049) in `src/test/java/com/notification/integration/AuditCorrelationTest.java`
-- [ ] T099 [P] [US6] Integration test asserting audit records cannot be updated or deleted through any available path (FR-050) in `src/test/java/com/notification/integration/AuditImmutabilityTest.java`
-- [ ] T100 [P] [US6] **Privacy test (merge blocker)**: plant a marker string in the content payload, run a full lifecycle including a failure and a retry, assert zero occurrences of the marker, zero credentials and zero unmasked recipient references across audit records, log output and metric labels — including the case where the simulated provider echoes content in its error text (SC-009) in `src/test/java/com/notification/privacy/NoSensitiveDataLeakTest.java`
+- [X] T097 [P] [US6] Integration test asserting one full run produces **all 10 event types** — the 8 from §4.9 plus `DELIVERY_EXPIRED` and `RETRY_BUDGET_EXHAUSTED` (FR-046, FR-053, SC-008) in `src/test/java/com/notification/integration/AuditCompletenessTest.java`
+- [X] T098 [P] [US6] Integration test asserting the complete history is retrievable by `correlationId` alone and every record is timestamped (FR-048, FR-049) in `src/test/java/com/notification/integration/AuditCorrelationTest.java`
+- [X] T099 [P] [US6] Integration test asserting audit records cannot be updated or deleted through any available path (FR-050) in `src/test/java/com/notification/integration/AuditImmutabilityTest.java`
+- [X] T100 [P] [US6] **Privacy test (merge blocker)**: plant a marker string in the content payload, run a full lifecycle including a failure and a retry, assert zero occurrences of the marker, zero credentials and zero unmasked recipient references across audit records, log output and metric labels — including the case where the simulated provider echoes content in its error text (SC-009) in `src/test/java/com/notification/privacy/NoSensitiveDataLeakTest.java`
 
 ### Implementation for User Story 6
 
-- [ ] T101 [US6] Implement the audit query by correlation identifier in `src/main/java/com/notification/persistence/JdbcAuditRepository.java` (depends on T026)
-- [ ] T102 [US6] Apply the T023 masking function in `src/main/java/com/notification/audit/AuditRecorder.java` to every recipient reference written to audit, logs and metric labels (FR-052)
-- [ ] T103 [US6] Verify every audit payload record uses the sealed allowlist from T024 and that `payload_ref` is the only route by which content is referenced, via a test in `src/test/java/com/notification/privacy/AuditPayloadAllowlistTest.java` (FR-051, FR-054)
-- [ ] T104 [US6] Wire the privacy scanner from T029 into CI as a blocking gate, in the CI config file created by T008 (e.g. `.github/workflows/ci.yml`) (depends on T008, T100)
+- [X] T101 [US6] Implement the audit query by correlation identifier in `src/main/java/com/notification/persistence/JdbcAuditRepository.java` (depends on T026)
+- [X] T102 [US6] Apply the T023 masking function in `src/main/java/com/notification/audit/AuditRecorder.java` to every recipient reference written to audit, logs and metric labels (FR-052)
+- [X] T103 [US6] Verify every audit payload record uses the sealed allowlist from T024 and that `payload_ref` is the only route by which content is referenced, via a test in `src/test/java/com/notification/privacy/AuditPayloadAllowlistTest.java` (FR-051, FR-054)
+- [X] T104 [US6] Wire the privacy scanner from T029 into CI as a blocking gate, in the CI config file created by T008 (e.g. `.github/workflows/ci.yml`) (depends on T008, T100)
 
 **Checkpoint**: All six user stories are functional and independently testable.
 

@@ -99,17 +99,20 @@ public sealed interface AuditPayload
     }
 
     record DeliveryFailed(String deliveryId, String maskedRecipient, String channel, int attemptNumber,
-            String classification, String diagnostic) implements AuditPayload {
+            String classification) implements AuditPayload {
         @Override
         public Map<String, String> fields() {
-            // diagnostic is bounded and sanitised by the adapter — never a provider response body.
+            // No adapter-supplied text of any kind. The classification is the defensible summary;
+            // free text from a provider is the one field that could carry the submitted content
+            // into audit, and the safest treatment of an unnecessary field is not to have it
+            // (source 4.9's minimisation rule). The bounded diagnostic is kept on delivery_attempt
+            // for operators, which is operational state rather than audit history.
             return Map.of(
                     "deliveryId", deliveryId,
                     "recipient", maskedRecipient,
                     "channel", channel,
                     "attemptNumber", String.valueOf(attemptNumber),
-                    "classification", classification,
-                    "diagnostic", diagnostic == null ? "" : diagnostic);
+                    "classification", classification);
         }
     }
 

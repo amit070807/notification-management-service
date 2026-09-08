@@ -33,4 +33,17 @@ public class AuditRecorder {
         repository.append(
                 new AuditRecord(ids.newId(), notificationId, correlationId, type, clock.now(), payload.fields()));
     }
+
+    /**
+     * Records an event that has no notification to attach to.
+     *
+     * <p>Only rejections qualify: source 4.9 requires them to be recorded, while FR-007 requires a
+     * rejected submission to create no notification. The correlation identifier keys the record
+     * instead, which is what FR-048 designates for retrieval anyway. A database CHECK constraint
+     * enforces that nothing else takes this path.
+     */
+    public void recordWithoutNotification(String correlationId, AuditEventType type, AuditPayload payload) {
+        repository.append(
+                new AuditRecord(ids.newId(), null, correlationId, type, clock.now(), payload.fields()));
+    }
 }

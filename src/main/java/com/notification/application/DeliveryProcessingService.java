@@ -186,8 +186,7 @@ public class DeliveryProcessingService {
                         Masking.mask(delivery.recipientRef().value()),
                         delivery.channel().name(),
                         attemptNumber,
-                        classification.name(),
-                        outcome.diagnostic()));
+                        classification.name()));
 
         // FR-042: a configuration fault, not a recipient fault. Surfaced separately so it is not
         // absorbed into the ordinary failure count, where an outage affecting every recipient

@@ -82,6 +82,8 @@ public class SimulatedChannelProvider implements ChannelProviderPort {
         }
         // The diagnostic names the classification and the channel only. It deliberately does not
         // interpolate the recipient or anything derived from the content.
-        return DeliveryOutcome.failed(simulatedFailure, "simulated %s on %s".formatted(simulatedFailure, channel));
+        // Code-shaped, not prose: DeliveryOutcome redacts anything else, and a real adapter must
+        // map its provider's response the same way rather than passing the body through.
+        return DeliveryOutcome.failed(simulatedFailure, "SIM_" + channel);
     }
 }

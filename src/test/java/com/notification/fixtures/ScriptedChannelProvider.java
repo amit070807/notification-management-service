@@ -49,7 +49,7 @@ public final class ScriptedChannelProvider implements ChannelProviderPort {
     }
 
     public ScriptedChannelProvider thenFail(FailureClassification classification) {
-        script.add(DeliveryOutcome.failed(classification, "simulated " + classification));
+        script.add(DeliveryOutcome.failed(classification, "SIM_" + classification));
         return this;
     }
 
@@ -60,7 +60,7 @@ public final class ScriptedChannelProvider implements ChannelProviderPort {
     }
 
     public ScriptedChannelProvider alwaysFail(FailureClassification classification) {
-        fallback = DeliveryOutcome.failed(classification, "simulated " + classification);
+        fallback = DeliveryOutcome.failed(classification, "SIM_" + classification);
         return this;
     }
 

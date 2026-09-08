@@ -40,17 +40,23 @@ jobs:
       - name: Tests
         run: ./gradlew test --no-daemon
 
-      # Gate 8: coverage floors — 90% domain, 80% overall
+      # Gate 8: the Principle V privacy scan, run as its own step so a leak is identifiable
+      # at a glance in the CI log rather than buried among 180+ test results. Blocking:
+      # the constitution names this a merge blocker.
+      - name: Privacy gate (no content, credentials or unmasked recipients in audit or logs)
+        run: ./gradlew test --tests 'com.notification.privacy.*' --no-daemon
+
+      # Gate 9: coverage floors — 90% domain, 80% overall
       - name: Coverage floors
         run: ./gradlew jacocoTestCoverageVerification --no-daemon
 
-      # Gate 9: secret scan (Principle V)
+      # Gate 10: secret scan (Principle V)
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Gate 10: dependency vulnerability audit.
+      # Gate 11: dependency vulnerability audit.
       # A new high or critical advisory blocks the merge.
       - name: Dependency audit
         uses: dependency-check/Dependency-Check_Action@main
@@ -62,7 +68,7 @@ jobs:
             --failOnCVSS 7
             --enableExperimental
 
-      # Gate 11: OpenAPI breaking-change diff against the base branch
+      # Gate 12: OpenAPI breaking-change diff against the base branch
       - name: OpenAPI breaking-change diff
         if: github.event_name == 'pull_request'
         run: |

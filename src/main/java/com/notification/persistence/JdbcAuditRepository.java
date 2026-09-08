@@ -49,7 +49,9 @@ public class JdbcAuditRepository implements AuditRepositoryPort {
     @Override
     public List<AuditRecord> findByNotificationId(UUID notificationId) {
         return jdbc.sql(
-                        "SELECT * FROM audit_event WHERE notification_id = :id ORDER BY occurred_at, id")
+                        // Ordered by the monotonic sequence, not the timestamp: events written in one
+                        // transaction share an instant, so a timestamp cannot order them (V4).
+                        "SELECT * FROM audit_event WHERE notification_id = :id ORDER BY sequence")
                 .param("id", notificationId)
                 .query(this::map)
                 .list();
@@ -58,7 +60,7 @@ public class JdbcAuditRepository implements AuditRepositoryPort {
     @Override
     public List<AuditRecord> findByCorrelationId(String correlationId) {
         return jdbc.sql(
-                        "SELECT * FROM audit_event WHERE correlation_id = :cid ORDER BY occurred_at, id")
+                        "SELECT * FROM audit_event WHERE correlation_id = :cid ORDER BY sequence")
                 .param("cid", correlationId)
                 .query(this::map)
                 .list();
@@ -67,6 +69,7 @@ public class JdbcAuditRepository implements AuditRepositoryPort {
     private AuditRecord map(ResultSet rs, int rowNum) throws SQLException {
         return new AuditRecord(
                 rs.getObject("id", UUID.class),
+                // Null for a rejection, which has no notification to reference (FR-006 vs FR-007).
                 rs.getObject("notification_id", UUID.class),
                 rs.getString("correlation_id"),
                 AuditEventType.valueOf(rs.getString("event_type")),
