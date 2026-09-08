@@ -307,15 +307,15 @@ appears anywhere.
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
-- [ ] T105 [P] Write the architecture overview (DO-002) at `docs/architecture.md`: components, tools, execution approach, control flow, key decisions — and **name §4.3's unmet recipient-preference factor explicitly** (G-26, DO-006)
-- [ ] T106 [P] Write setup instructions (DO-003) at `README.md`, verified by a reviewer running them from a clean clone with no undocumented step (SC-011)
-- [ ] T107 [P] Write the testing approach, limitations and trade-offs (DO-004) at `docs/testing.md`, listing **every** carried limitation: G-26, G-32, G-12, G-22, G-01, G-11, G-15, G-25, and any U-item still unresolved (DO-005)
-- [ ] T108 [P] Add the extensibility fixture channel in `src/test/java/com/notification/architecture/ChannelExtensibilityTest.java`, proving a new channel needs no change to routing, retry, state or audit (Principle VII)
-- [ ] T109 [P] Verify the `Channel`, `Severity`, `Priority`, `NotificationType`, `DeliveryState`, `NotificationState`, `FailureClassification` and `RoutingReasonCode` enums match `contracts/openapi.yaml` exactly, via a test in `src/test/java/com/notification/contract/EnumParityTest.java`
-- [ ] T110 Run the full validation in `specs/001-notification-management-core/quickstart.md` — all 11 scenarios against a live instance
-- [ ] T111 Confirm JaCoCo floors in `build.gradle.kts` pass at 90% domain / 80% overall, and that no test was muted or retried to get there
-- [ ] T112 [P] Confirm every ADR in `specs/001-notification-management-core/research.md` is present and current, including ADR-011 through ADR-015 created by the U-item tasks (Principle VIII)
-- [ ] T113 Review pass against the Review Evidence checklist in `.specify/memory/constitution.md`, recording the verification in the pull request
+- [X] T105 [P] Write the architecture overview (DO-002) at `docs/architecture.md`: components, tools, execution approach, control flow, key decisions — and **name §4.3's unmet recipient-preference factor explicitly** (G-26, DO-006)
+- [X] T106 [P] Write setup instructions (DO-003) at `README.md`, verified by a reviewer running them from a clean clone with no undocumented step (SC-011)
+- [X] T107 [P] Write the testing approach, limitations and trade-offs (DO-004) at `docs/testing.md`, listing **every** carried limitation: G-26, G-32, G-12, G-22, G-01, G-11, G-15, G-25, and any U-item still unresolved (DO-005)
+- [X] T108 [P] Add the extensibility fixture channel in `src/test/java/com/notification/architecture/ChannelExtensibilityTest.java`, proving a new channel needs no change to routing, retry, state or audit (Principle VII)
+- [X] T109 [P] Verify the `Channel`, `Severity`, `Priority`, `NotificationType`, `DeliveryState`, `NotificationState`, `FailureClassification` and `RoutingReasonCode` enums match `contracts/openapi.yaml` exactly, via a test in `src/test/java/com/notification/contract/EnumParityTest.java`
+- [X] T110 Run the full validation in `specs/001-notification-management-core/quickstart.md` — all 11 scenarios against a live instance
+- [X] T111 Confirm JaCoCo floors in `build.gradle.kts` pass at 90% domain / 80% overall, and that no test was muted or retried to get there
+- [X] T112 [P] Confirm every ADR in `specs/001-notification-management-core/research.md` is present and current, including ADR-011 through ADR-015 created by the U-item tasks (Principle VIII)
+- [X] T113 Review pass against the Review Evidence checklist in `.specify/memory/constitution.md`, recording the verification in the pull request
 
 ---
 
