@@ -1,0 +1,655 @@
+# Feature Specification: Push Channel, Deduplication and Provider Refactoring
+
+**Feature Branch**: `feature/phase-2-brownfield`
+
+**Created**: 2026-09-09
+
+**Status**: Draft — no open clarifications; 1 constitutional amendment required before US3
+(covering both halves of deduplication — see D7)
+
+**Input**: Brownfield scenario covering all three proposed enhancement options, plus the
+cross-cutting brownfield obligations.
+
+**Source of record**: the brownfield requirements document (scenario overview, §4.3, §4.5, §4.9,
+implementation phases, success criteria).
+
+**Baseline**: the delivered phase-1 system —
+[spec](../001-notification-management-core/spec.md) ·
+[architecture](../../docs/architecture.md) · commit `0c4ca3e`, 196 tests, all gates green.
+
+## Provenance Legend
+
+Every requirement below carries exactly one tag. Brownfield adds a sixth to the phase-1 set,
+because a specification for an existing system must distinguish *what the document asks for* from
+*what the code already does*.
+
+| Tag | Meaning | Authority |
+|-----|---------|-----------|
+| **[E]** | **Explicit requirement** — stated in the brownfield document, cited | Binding |
+| **[C]** | **Direct consequence** — logically forced by an [E] requirement | Binding; the derivation is stated so it can be challenged |
+| **[D]** | **Design-derived** — a choice that makes an [E] requirement coherent; alternatives existed | Changeable; the rejected alternative is named |
+| **[A]** | **Assumption** — not derivable from the source | Requires confirmation; every [A] appears in the Gap Register |
+| **[X]** | **Out of scope** — deliberately excluded, with the reason | Excluded until a requirement change says otherwise |
+| **[B]** | **Baseline fact** — verifiable in the phase-1 code today, not a requirement | Statement of the existing system. Cited so a reader can tell enhancement from restatement |
+
+**Rule applied throughout**: implementation preferences belong to `/speckit-plan`, not here. Where
+an [E] requirement forces observable behaviour, the behaviour is stated; the mechanism is not.
+
+## Baseline: what already exists
+
+Stated first, because a brownfield specification that does not say what it is building on cannot
+be reviewed. Each is verifiable in the phase-1 codebase.
+
+| # | Baseline fact | Evidence |
+|---|---------------|----------|
+| **B-01** | Two channels exist: `EMAIL` and `SMS`, both simulated | `Channel` enum; ADR-005, G-22 |
+| **B-02** | A channel abstraction is already extracted — `ChannelProviderPort` — and an architecture test fails if routing, retry, state or audit names a concrete channel | `ChannelProviderPort`, `ChannelExtensibilityTest` |
+| **B-03** | **No idempotency or deduplication mechanism exists.** Duplicate client identifiers are accepted as independent notifications | Constitution v2.0.0 register item 9; phase-1 D4, FR-008b; `DuplicateSubmissionTest` |
+| **B-04** | Routing consults three factors — requested channels, severity, policy — and is provably independent of recipient data | Phase-1 D2, FR-019a; `RoutingPreferenceIndependenceTest` |
+| **B-05** | `priority` is captured, stored and returned but drives no behaviour | Phase-1 G-15 |
+| **B-06** | Ten audit event types exist; all reachable in one run | `AuditEventType`; `AuditCompletenessTest` |
+| **B-07** | Failure classification is a closed six-value taxonomy with retryability declared in one place | `FailureClassification`, `Retryability` |
+| **B-08** | A recipient is an opaque reference; no destination data is held anywhere | Phase-1 D5, G-32 |
+| **B-09** | Two source requirements are knowingly unmet: §4.3's recipient-preference factor (G-26) and the absence of destination data (G-32) | `docs/testing.md` limitations |
+| **B-10** | No feature-flag mechanism exists | No flag infrastructure in the codebase |
+| **B-11** | No performance or load testing exists, and no targets are asserted | Phase-1 G-11 |
+| **B-12** | The API contract declares `Channel` as a **closed** enum with values `EMAIL`, `SMS` | `contracts/openapi.yaml` |
+| **B-13** | **The worker can double-send.** Delivery processing is at-least-once by design: a lease can expire, or a process can die after the provider call but before the state write, and the delivery is then re-attempted. No provider-call idempotency key exists — constitution v2.0.0 explicitly struck the "derived per-attempt provider idempotency key" from Principle III | `DeliveryWorker`, `claimDue` lease; constitution v2.0.0 sync report |
+
+## User Scenarios & Testing *(mandatory)*
+
+### User Story 1 - Deliver notifications over a push channel (Priority: P1)
+
+**[E — Option 1]**
+
+A source system requests delivery over push notifications alongside or instead of email and SMS,
+and push deliveries appear in status and audit history exactly as the existing channels do.
+
+**Why this priority**: It is the only one of the three options whose premise holds against the
+existing system, it is the enhancement most visible to a caller, and it is what *creates* the
+provider divergence that User Story 2 then consolidates.
+
+**Independent Test**: Submit requesting `PUSH`, and confirm a delivery is created, attempted,
+and reported per recipient and channel — without any change in behaviour for `EMAIL` or `SMS`.
+
+**Acceptance Scenarios**:
+
+1. **[E]** **Given** a notification requesting `PUSH`, **When** it is submitted, **Then** a
+   delivery is created for that channel and its outcome is reported in status.
+2. **[C ← "without breaking existing channels"]** **Given** a notification requesting `EMAIL` and
+   `SMS`, **When** it is processed, **Then** its behaviour is identical to before this change —
+   same states, same audit events, same status shape.
+3. **[E — "ensure audit history captures channel-specific events"]** **Given** a push delivery,
+   **When** its audit history is read, **Then** the push-specific outcome is recorded.
+4. **[C ← B-02]** **Given** the push channel is added, **When** the architecture test runs,
+   **Then** routing, retry, state and audit still name no concrete channel.
+5. **[E — "handle provider authentication"]** **Given** the push provider rejects the service's
+   credentials, **When** a delivery is attempted, **Then** it is classified
+   `AUTH_ERROR` and raises the existing operational signal rather than being retried.
+6. **[E — "rate limiting"]** **Given** the push provider signals a rate limit, **When** the
+   outcome is classified, **Then** it is treated as retryable — **see G-38 for whether a
+   rate limit warrants its own classification.**
+
+---
+
+### User Story 2 - Consolidate provider-specific delivery logic (Priority: P2)
+
+**[E — Option 3]**
+
+Provider-specific error handling and retry behaviour live behind one maintainable abstraction, so
+that per-provider differences do not leak into the delivery pipeline.
+
+**Why this priority**: Sequenced **after** User Story 1 deliberately. Option 3 asks to "identify
+common patterns across channel implementations", but today's two channels are near-identical
+simulated adapters (B-01) — there is little duplication to extract. Adding push, with genuinely
+different provider semantics, is what produces the divergence worth consolidating. Refactoring
+first would mean extracting an abstraction from a single example.
+
+**Independent Test**: Add a fixture channel with distinct error codes and confirm it requires no
+change to routing, retry, state or audit.
+
+**Acceptance Scenarios**:
+
+1. **[B-02, already true]** **Given** the channel provider abstraction, **When** a channel is
+   added, **Then** routing, retry, state and audit are untouched. *This already holds; the test
+   exists. It is restated so a reviewer can see what Option 3 does not need to deliver.*
+2. **[E — "handle provider-specific error codes"]** **Given** two providers reporting the same
+   condition with different codes, **When** each is mapped, **Then** both produce the same
+   member of the closed taxonomy (B-07), with no unmapped pass-through.
+3. **[E — "provider-specific retry strategies"]** **Given** providers with different retry
+   characteristics, **When** a retryable failure occurs, **Then** the retry schedule may differ
+   per provider while the bound remains enforced for every one.
+4. **[X ← D10]** *Graceful degradation is out of scope.* §4.5 defines failure handling for this
+   system as bounded retry across the five named classifications, which is already delivered. A
+   provider that fails causes its deliveries to retry and terminate on the existing schedule,
+   affecting no other channel or recipient.
+
+---
+
+### User Story 3 - Suppress duplicate notifications (Priority: P3)
+
+**[E — Option 2]**
+
+Redundant notifications are recognised and suppressed rather than delivered twice, and the
+suppression is visible in status and audit history.
+
+**Why this priority**: Last, because it is the only option that **reverses a recorded decision**
+and requires a constitutional amendment before any code is written. Sequencing it after the other
+two also means deduplication is designed against the final channel set rather than a subset.
+
+> **⚠ BLOCKED: constitutional amendment required.**
+>
+> The source says Option 2 builds "upon the existing idempotency mechanism". **No such mechanism
+> exists** (B-03). Constitution v2.0.0 register item 9 defers idempotency, deduplication and
+> replay; phase-1 decision D4 chose the opposite behaviour, accepting duplicate client identifiers
+> as independent notifications (FR-008b), and a test asserts the second submission is *not*
+> suppressed.
+>
+> **One amendment covers both halves.** Register item 9 names all three of "Duplicate-submission
+> semantics, at-least-once duplicate-execution handling, and provider-call deduplication", and
+> v2.0.0 struck the "derived per-attempt provider idempotency key" from Principle III — which is
+> precisely the delivery half. Neither level can be built under the constitution as it stands.
+>
+> Implementing this story therefore requires: (a) an amendment lifting the deferral, following the
+> constitution's own procedure — rule changed, motivation, impact on existing code and tests,
+> migration plan, owner approval; and (b) revising phase-1 D4 and FR-008b, which the submission
+> half reverses. Neither may be done silently. See G-33.
+>
+> Note that item 9 also says these "MUST be specified before any production use" — so lifting the
+> deferral is the step the constitution anticipated, not a departure from it.
+
+**Scope (D7)**: deduplication applies at **both** levels, which are distinct mechanisms solving
+distinct problems:
+
+| Level | Problem | Actor |
+|---|---|---|
+| **Submission** | Two requests that mean the same thing should not both reach the recipient | the caller |
+| **Delivery** | One accepted notification should not reach the recipient twice because the worker re-attempted it | the system |
+
+The delivery half addresses B-13, a real hole in the delivered system: our worker is at-least-once,
+so a lease expiring between the provider call and the state write produces a genuine second send
+today. It is the half that most deserves the word "brownfield" — a correction to existing behaviour
+under load rather than a new capability.
+
+**Independent Test**: (submission) Submit two notifications the configured boundary treats as
+duplicates and confirm the second is suppressed and visible as such. (delivery) Force a
+re-attempt after a successful provider call and confirm no second user-visible send occurs.
+
+**Acceptance Scenarios**:
+
+1. **[E]** **Given** a notification the deduplication boundary treats as a duplicate of a recent
+   one, **When** it is submitted, **Then** it is suppressed rather than delivered.
+2. **[E — "track suppressed notifications in audit history"]** **Given** a suppression, **When**
+   audit history is read, **Then** the suppression is recorded.
+3. **[E — "reflected in status or audit history"]** **Given** a suppressed submission, **When**
+   its status is retrieved, **Then** the suppression is visible to the caller.
+4. **[E — "reprocessing a queued delivery must not create uncontrolled duplicate side effects"]**
+   **Given** a queued delivery whose provider call succeeded but whose state write did not,
+   **When** the lease expires and it is re-attempted, **Then** the recipient receives one
+   notification, not two — **"uncontrolled" is undefined; see G-43.**
+5. **[C ← B-13]** **Given** the delivery half is in force, **When** any provider call is made,
+   **Then** it carries a key stable across re-attempts of the same attempt, so a repeat is
+   recognisable by the provider as the same send.
+6. **[C ← FR-104]** **Given** either half is switched off, **When** submissions and deliveries are
+   processed, **Then** behaviour matches the phase-1 baseline exactly.
+7. **[C ← B-03 + amendment]** **Given** the amendment has not been approved, **When**
+   implementation is attempted, **Then** it does not proceed — for either half.
+
+---
+
+### User Story 4 - Complete the audit vocabulary (Priority: P4)
+
+**[E — §4.9 "Retry scheduled **and executed**", "Routing decision made **and channel selected**"]**
+
+Audit history distinguishes a retry being scheduled from a retry being executed, and records the
+channel selection alongside the routing decision.
+
+**Why this priority**: A correction, small in scope, and dependent on the other stories having
+produced the actions it records.
+
+**Independent Test**: Run one notification through a retry and confirm both the scheduling and the
+execution of that retry are separately visible in history.
+
+**Acceptance Scenarios**:
+
+1. **[E]** **Given** a retryable failure, **When** history is read, **Then** the retry being
+   scheduled and the retry being executed are both distinguishable.
+2. **[E]** **Given** a routing decision, **When** history is read, **Then** the channels selected
+   are recorded alongside the decision.
+3. **[C ← B-06]** **Given** new event types, **When** the audit completeness test runs, **Then**
+   every declared type is still reachable in a single run.
+4. **[C ← baseline Principle V]** **Given** any new audit record, **When** the privacy gate runs,
+   **Then** no content, credential or unmasked recipient reference appears.
+
+---
+
+### Edge Cases
+
+- **[C]** A notification requests `PUSH` while the push feature flag is off → behaves as though
+  the channel were not enabled, with the exclusion reason recorded (G-39).
+- **[C ← B-12]** An existing consumer, unaware of `PUSH`, receives a status response containing
+  it → the contract's `Channel` enum is closed, so this is a compatibility question, not a
+  formality. See G-46.
+- **[A]** A push delivery has no device token to send to → the same shape as G-32, but sharper:
+  push is unusable without a token, whereas an opaque reference is at least arguable for email.
+  See G-49.
+- **[E]** The push provider rate-limits the service → retryable, but whether it consumes the
+  ordinary retry budget is unspecified (G-38).
+- **[D]** A duplicate arrives while the original is still in flight → suppression must be decided
+  against in-flight state, not only completed state, or the window has a hole.
+- **[A]** A duplicate arrives after the original has permanently failed → suppressing it would
+  prevent a legitimate retry by the caller. Whether failure resets the deduplication window is
+  unspecified (G-41).
+- **[C]** Deduplication is enabled and then rolled back → notifications suppressed while it was on
+  were never delivered and are not recoverable. Rollback is not symmetric with rollout (G-48).
+
+## Requirements *(mandatory)*
+
+### Cross-cutting brownfield obligations
+
+- **FR-101 [E — "without breaking existing functionality"]**: Every behaviour delivered in phase 1
+  MUST continue to hold unchanged unless a requirement in this document explicitly changes it.
+- **FR-102 [E — "validate changes against existing test suites"]**: The existing test suite MUST
+  pass unmodified, except where a test asserts behaviour this document explicitly changes; any
+  such change MUST be identified and justified individually.
+- **FR-103 [E — "backward compatibility maintained or migration path clearly documented"]**: For
+  each externally visible change, the system MUST either preserve the existing contract or provide
+  a documented migration path. **Which of the two applies is not stated per change — see G-46.**
+- **FR-104 [E — "implement feature with feature flags for gradual rollout"]**: Each enhancement
+  MUST be independently switchable, and MUST be inert when switched off.
+- **FR-105 [C ← FR-104]**: With every flag off, system behaviour MUST be indistinguishable from
+  the phase-1 baseline — this is what makes a flag a rollback mechanism rather than a setting.
+- **FR-106 [E — "document migration paths and rollback procedures"]**: Each enhancement MUST have
+  a documented rollback procedure, and that procedure MUST state what is NOT recoverable by it.
+- **FR-107 [E — "performance impact is measurable and acceptable"]**: The performance impact of
+  the enhancements MUST be measured. **No target defines "acceptable" — see G-40.**
+- **FR-108 [E — "code quality and test coverage meet or exceed existing standards"]**: Coverage
+  MUST NOT fall below the existing floors, and no existing quality gate may be weakened.
+
+### Push notification channel (Option 1)
+
+- **FR-110 [E]**: The system MUST support delivery over a push notification channel.
+- **FR-111 [C ← FR-110 + B-01]**: `PUSH` MUST become a member of the closed channel set, and MUST
+  be selectable by routing, attemptable by the worker, and reportable in status — with no special
+  case in any of them.
+- **FR-112 [E — "without breaking existing channels"]**: Adding push MUST NOT alter the behaviour
+  of `EMAIL` or `SMS`.
+- **FR-113 [E — "channel-agnostic abstraction layer"]**: The abstraction through which channels
+  are delivered MUST remain channel-agnostic. **[B-02]** This already holds; the requirement is
+  that push does not break it.
+- **FR-114 [E — "extend the routing logic to support new channel selection criteria"]**: Routing
+  MUST support the selection criteria push introduces. **This is in tension with FR-113 — see
+  G-51.**
+- **FR-115 [E — "handle provider authentication"]**: The push provider integration MUST
+  authenticate. **No scheme, credential source or provider is named — see G-37.**
+- **FR-116 [C ← FR-115 + baseline Principle V]**: Push provider credentials MUST NOT appear in
+  audit records, logs, metric labels or status responses.
+- **FR-117 [E — "rate limiting"]**: The system MUST handle provider rate limiting. **Neither the
+  limit nor the response to it is specified — see G-38.**
+- **FR-118 [E — "audit history captures channel-specific events"]**: Channel-specific outcomes
+  MUST be recorded in audit history, subject to FR-116 and the existing minimisation rules.
+
+### Provider abstraction (Option 3)
+
+- **FR-130 [E — "extract channel provider interface and base implementations"]**: Provider
+  integrations MUST share a common interface and common base behaviour. **[B-02]** The interface
+  exists; base behaviour for shared concerns does not.
+- **FR-131 [E — "handle provider-specific error codes"]**: Each provider MUST map its own error
+  codes into the closed classification taxonomy, with no unmapped pass-through. **[B-07]** The
+  taxonomy exists and this rule is already enforced for the simulated providers.
+- **FR-132 [E — "provider-specific retry strategies"]**: Retry behaviour MUST be configurable per
+  provider. **[C]** Every per-provider strategy MUST still be bounded — a provider may not opt out
+  of the bound.
+- **FR-134 [E — "maintain backward compatibility with existing integrations"]**: The refactoring
+  MUST NOT change the observable behaviour of existing channels.
+- **FR-135 [C ← FR-130 + B-02]**: The existing architecture test MUST continue to pass unchanged —
+  a refactoring that required weakening it would have removed the property it was protecting.
+
+### Deduplication (Option 2)
+
+> Every requirement in this group is **conditional on the constitutional amendment described in
+> User Story 3**. They are specified so the amendment can be judged against concrete consequences,
+> not so they can be built before it is granted.
+
+- **FR-140 [E]**: The system MUST suppress redundant notifications rather than delivering them.
+- **FR-141 [A ← D9]**: Two submissions are duplicates when they share the same **source system**
+  and the same **event/correlation identifier**. Suppression is evaluated per notification: a
+  second submission bearing an already-seen pair is suppressed in full, whatever recipients or
+  channels it names.
+- **FR-141a [C ← FR-141]**: The submitting system is responsible for event-identifier uniqueness.
+  The service MUST NOT infer it and MUST NOT silently repair a violation. **See G-55: neither
+  source document requires this identifier to be unique, and the service cannot enforce it.**
+- **FR-141b [C ← FR-141]**: A deduplication window MUST bound how long a pair suppresses later
+  submissions. **No duration is stated by either source — a default is recorded in Assumptions.**
+- **FR-141c [D]**: A notification that reached a terminal *unsuccessful* state MUST NOT suppress a
+  later submission of the same pair. *(Design-derived: suppressing after a permanent failure would
+  make that failure unrecoverable by the caller, turning a delivery problem into silent data loss.
+  Alternative rejected: suppress on existence alone — simpler, but strictly worse for the caller.)*
+- **FR-142 [E — "the deduplication boundary and retention policy must be documented"]**: That
+  boundary and its retention policy MUST be documented as a deliverable.
+- **FR-143 [E — "track suppressed notifications in audit history"]**: Every suppression MUST be
+  recorded in audit history.
+- **FR-144 [E — "reflected in status or audit history"]**: A suppressed submission MUST be visible
+  to the caller through status retrieval or audit history.
+- **FR-146 [C ← FR-140 + phase-1 D4]**: Phase-1 FR-008b — that two submissions sharing a client
+  identifier become two independent notifications — MUST be revised, and the test asserting the
+  second is not suppressed MUST be replaced rather than deleted.
+- **FR-147 [C ← FR-140 + FR-104]**: With submission-level deduplication switched off, submission
+  behaviour MUST be identical to the phase-1 baseline.
+
+#### Deduplication — delivery level (Option 2, second half; D7)
+
+*Addresses B-13: a real hole in the delivered system rather than a new capability. The worker is
+at-least-once, so a lease expiring between a successful provider call and the state write produces
+a genuine second send today.*
+
+- **FR-160 [E — "reprocessing a queued delivery must not create uncontrolled duplicate side
+  effects"]**: Reprocessing a queued delivery MUST NOT produce uncontrolled duplicate side
+  effects. **"Uncontrolled" is undefined — see G-43.**
+- **FR-161 [C ← FR-160 + B-13]**: A provider call MUST carry a key that is stable across
+  re-attempts of the same logical attempt, so that a repeat is recognisable to the provider as the
+  same send rather than a new one.
+- **FR-162 [C ← FR-160]**: A delivery whose provider call succeeded but whose outcome was not
+  recorded MUST NOT produce a second user-visible notification when re-processed.
+- **FR-163 [C ← FR-161 + baseline]**: The key MUST be derivable from data the system already
+  holds, so that it is identical on every re-attempt without needing to have been stored before
+  the crash that caused the re-attempt.
+- **FR-164 [C ← FR-160 + FR-104]**: With delivery-level deduplication switched off, delivery
+  behaviour MUST be identical to the phase-1 baseline — including its at-least-once exposure.
+- **FR-165 [C ← B-13 + constitution]**: This restores, in substance, the "derived per-attempt
+  provider idempotency key" that constitution v2.0.0 struck from Principle III. The amendment MUST
+  therefore reinstate that rule rather than adding an unrelated one.
+
+### Audit vocabulary (§4.9 correction)
+
+- **FR-150 [E — §4.9]**: Audit history MUST record retry **scheduled and executed** as
+  distinguishable actions. **Whether "executed" differs from the existing attempt record is
+  ambiguous — see G-44.**
+- **FR-151 [E — §4.9]**: Audit history MUST record the routing decision **and the channel
+  selected**. **[B-06]** The existing routing record already carries the selected channels; see
+  G-45 for whether a separate action is intended.
+- **FR-152 [C ← B-06]**: Every declared audit event type MUST remain reachable in a single
+  end-to-end run.
+- **FR-153 [C ← baseline Principle V]**: New audit records MUST satisfy the existing privacy gate
+  unchanged.
+
+### Key Entities
+
+- **[B] Channel** — closed set, currently `EMAIL` and `SMS`. **[E]** Gains `PUSH`.
+- **[B] ChannelProviderPort** — the existing channel-agnostic abstraction. **[E]** Gains shared
+  base behaviour for error mapping and per-provider retry.
+- **[A] Push credentials** — required by FR-115, with no source defined (G-37). Sensitive under
+  the existing rules; never persisted or logged.
+- **[A ← D9] Deduplication key** — the pair (source system, event/correlation identifier). Its correctness depends on a caller contract the service cannot enforce (G-55).
+- **[A] Suppression record** — a suppressed submission, visible in status or audit (FR-143,
+  FR-144). Its relationship to the notification entity is undefined until the boundary is.
+- **[A] Feature flag** — per-enhancement switch (FR-104). No mechanism exists today (B-10).
+- **[B] Notification, Delivery, DeliveryAttempt, RoutingDecision, AuditEvent** — unchanged in
+  shape by this phase, except where a requirement above says otherwise.
+
+### Out of Scope *(this iteration)*
+
+- **[X] Real push provider integration** — the source names no provider, and phase-1's simulated
+  approach (G-22) is unchanged. Nothing here proves interoperability with a real push service.
+- **[X] A recipient preference store** — §4.3 still names preferences and still defines no source.
+  **G-26 survives unchanged**; this is the second document to name the factor without supplying it.
+- **[X] Destination data (device tokens, addresses)** — G-32 survives unchanged and sharpens
+  (G-49).
+- **[X] Performance targets** — measurement is required (FR-107); no target is stated (G-40).
+- **[X ← D10] Resilience: circuit breaking, load shedding and channel fallback.** §4.5 defines this
+  system's failure handling as bounded retry across five classifications, and that is delivered.
+  **Accepted consequence**: a provider outage lasting beyond the retry window exhausts the
+  deliveries in flight against it, and those are terminal — dead-letter replay is out of scope by
+  constitution register item 10. With the current schedule that window is short.
+- **[X] Multi-tenancy, cancellation, rate limiting of *callers*** — not present in either source
+  document.
+
+## Success Criteria *(mandatory)*
+
+### Measurable Outcomes
+
+- **SC-101 [C ← FR-101/FR-102]**: The complete phase-1 test suite passes unmodified, apart from
+  tests asserting behaviour this document explicitly changes — each such change individually
+  justified. Zero unexplained modifications.
+- **SC-102 [C ← FR-105]**: With every feature flag off, the system's observable behaviour is
+  indistinguishable from the phase-1 baseline — verified by running the phase-1 suite against the
+  flagged-off build.
+- **SC-103 [E ← Option 1]**: A notification requesting push is delivered, and its outcome is
+  visible per recipient and channel, exactly as for the existing channels.
+- **SC-104 [C ← FR-112]**: For an identical email-and-SMS notification, every observable outcome
+  before and after this phase is identical — states, audit event sequence, status shape.
+- **SC-105 [C ← FR-111 + B-02]**: Adding the push channel required no change to routing, retry,
+  state or audit logic — verified by the existing architecture test passing unchanged.
+- **SC-107 [E ← Option 3]**: Two providers reporting the same condition with different codes
+  produce the same classification, with no unmapped outcome in any provider.
+- **SC-108 [C ← FR-132]**: No delivery on any channel exceeds its configured attempt bound,
+  including channels with a provider-specific strategy.
+- **SC-109 [E ← Option 2, submission level]**: A duplicate submission is suppressed, produces no
+  second delivery, and is visible to the caller as suppressed rather than silently discarded.
+- **SC-109a [E ← Option 2, delivery level]**: A delivery whose provider call succeeded but whose
+  state write did not is re-processed and produces **one** user-visible notification, not two —
+  demonstrated by forcing that exact interleaving rather than by inspection.
+- **SC-109b [C ← FR-164]**: With deduplication switched off at both levels, the phase-1 suite —
+  including the test asserting a second submission is not suppressed — passes unmodified.
+- **SC-110 [E ← §4.9]**: One run including a retry produces distinguishable records for the retry
+  being scheduled and executed, and every declared audit event type remains reachable.
+- **SC-111 [C ← FR-153]**: The privacy gate passes unchanged, including for push provider
+  credentials and any new audit record.
+- **SC-112 [E ← "performance impact is measurable"]**: The performance impact of each enhancement
+  is measured and reported. **No pass/fail threshold is asserted, because the source states none
+  (G-40).**
+- **SC-113 [E ← "documentation is comprehensive and up-to-date"]**: The architecture, setup and
+  testing documents reflect the enhanced system, and the deduplication boundary and retention
+  policy are documented per FR-142.
+- **SC-114 [C ← FR-106]**: Each enhancement has a rollback procedure that has been executed at
+  least once, and that states explicitly what it cannot recover.
+
+## Gap Register
+
+Continues phase-1 numbering (which ended at G-32). Every gap names the source requirement that
+creates it. **Unresolved** items have no answer; **Assumed** items have a working answer that
+remains a candidate for correction and flows into the limitations deliverable.
+
+| ID | Gap | Type | Source requirement that creates it | Status |
+|----|-----|------|------------------------------------|--------|
+| G-33 | **Option 2's premise is false.** It says it builds "upon the existing idempotency mechanism"; no such mechanism exists | **Contradiction between source and system** | Option 2 preamble, against constitution v2.0.0 item 9 and phase-1 D4/FR-008b | **Unresolved and blocking, for BOTH halves (D7).** Register item 9 names duplicate-submission semantics, at-least-once duplicate-execution handling and provider-call deduplication together, so one amendment covers both levels. Also requires revising D4 and FR-008b, which the submission half reverses. |
+| G-54 | If §4.3's wording delta is context rather than requirement (D8), the §4.9 deltas — "retry scheduled **and executed**", "routing decision made **and channel selected**" — sit in the same section and may be too | **Consistency question raised by D8** | "Applicable Functional Requirements" heading, §4.9 | **Unresolved.** US4 currently treats them as corrections. If D8's reasoning is applied consistently, US4 is also out of scope and this phase covers the three options alone. Raised rather than assumed either way. |
+| G-57 | With graceful degradation out of scope (D10) and the provider abstraction already delivered (G-50), Option 3's remaining new work is narrow: per-provider error-code mapping and per-provider retry strategies | **Scope observation, not a gap in the source** | Option 3 after D10 | **Recorded.** Both remaining items are needed by Option 1 regardless — push introduces the first genuinely different provider error vocabulary. Option 3 may therefore be largely satisfied as a by-product of Option 1 rather than as separate work. Worth confirming before planning. |
+| G-53 | The delivered worker can double-send: a lease expiring between a successful provider call and the state write causes a re-attempt with no provider-side key to recognise it | **Defect in the existing system**, not a gap in the source | Discovered from B-13 while scoping Option 2's second half | **Unresolved until the amendment lands.** Addressed by FR-160–FR-165. Worth noting it is invisible in normal operation and appears only under lease expiry or process death — exactly the conditions least likely to be exercised before production. |
+| G-34 | The document presents three options as alternatives ("Proposed Enhancement Options") | Ambiguous scope | Enhancement Options section | **RESOLVED 2026-09-09 (D6).** The project owner directed that all three be covered. |
+| G-35 | The brownfield §4.3 text reads "notification severity **and priority levels**" where the greenfield text read "notification severity" | **Wording difference between source documents** | §4.3, under the heading "Applicable Functional Requirements" | **RESOLVED 2026-09-09 (D8): out of scope.** Priority appears only inside a "factors such as" list, in a section that supplies context for the enhancement options rather than new requirements, and no option names priority in its key considerations. Recorded so the difference is not lost, but not implemented. **Phase-1 G-15 stays open**: `priority` remains a mandatory field that drives no behaviour. |
+| G-36 | §4.3 introduces "configured channels" as a new term, undefined — configured by whom, stored where, distinct from the policy's enabled channels or not | Missing | §4.3, brownfield text | **Assumed** to mean the policy's channel enablement, which already exists. If it means a per-recipient configuration, it is a second form of G-26 and equally unsupplied. |
+| G-37 | Push provider authentication is required but no scheme, credential source, or provider is named | Missing | Option 1, "handle provider authentication" | **Assumed**: credentials arrive from configuration or a secret manager, as for any other secret, and never enter audit, logs or responses. Which provider, and which scheme, is unanswered. |
+| G-38 | Rate limiting must be "handled" but no limit, and no required response, is stated. It is also absent from §4.5's five failure kinds | Missing, and a **taxonomy question** | Option 1, "rate limiting", against §4.5's closed list | **Unresolved.** Options: map to the existing transient failure; add a classification, which changes a closed enum the contract publishes; or throttle before attempting. Each has different observable consequences. |
+| G-39 | Feature flags are required but their granularity, rollout criteria and lifecycle are unstated | Missing | Implementation Phase 2, "feature flags for gradual rollout" | **Assumed**: one flag per enhancement, default off, removable once an enhancement is permanent. "Gradual" is assumed to mean per-deployment, not per-caller or percentage-based. |
+| G-40 | Performance impact must be "measurable and acceptable" and load testing is required, but no target defines acceptable | Missing | Phase 3 and Success Criteria, against phase-1 G-11 | **Unresolved, non-blocking.** Measurement is specified; no pass/fail criterion is asserted. G-11 survives. |
+| G-41 | The deduplication boundary is explicitly delegated — what makes two submissions duplicates, over what window, and whether a failed original resets it | **Delegated by the source** | Option 2, "design a deduplication strategy" | **RESOLVED 2026-09-09 (D9).** Key: (source system, event identifier); suppression per notification. Window duration and failure-reset behaviour are assumptions, not source requirements. |
+| G-55 | **Deduplication correctness depends on a caller contract the service cannot enforce.** Neither source document requires the event/correlation identifier to be unique, and phase 1 does not constrain it — `correlation_id` is indexed, not unique, and the contract describes it only as keying audit history | **Unenforceable precondition** | Created by the D9 resolution of G-41 | **Unresolved.** If a caller reuses an identifier, notifications are silently suppressed and never delivered, with nothing to surface it. Mitigations available and unchosen: reject on detected reuse with differing content; warn and deliver; or publish the uniqueness requirement in the contract. |
+| G-56 | Enabling deduplication changes the meaning of an existing field for existing callers, who were never told it must be unique | **Backward-compatibility risk** | Created by D9, against phase-1 FR-002/FR-048 and the published contract | **Unresolved.** FR-103's migration path MUST require callers to audit identifier usage before the flag is enabled; FR-104's flag is what makes that audit possible before any suppression occurs. |
+| G-42 | The boundary and retention policy "must be documented" — an obligation on the deliverable, not a behaviour | Explicit obligation | Option 2 | **Tracked** as FR-142; satisfied only when G-41 is answered. |
+| G-43 | "Reprocessing a queued delivery must not create uncontrolled duplicate side effects" — "uncontrolled" is undefined, implying some duplication is controlled and acceptable | Ambiguous | Option 2 | **Assumed**: a duplicate provider call is acceptable if it cannot produce a second user-visible notification; the phrase is read as at-least-once processing with at-most-once visible effect. |
+| G-44 | §4.9 names "retry scheduled **and executed**". Whether "executed" is distinct from the existing delivery-attempted record is unclear | Ambiguous | §4.9, brownfield text, against B-06 | **Assumed** distinct: "scheduled" is the decision, "executed" is the retry actually running, which the existing attempt record covers only implicitly. |
+| G-45 | §4.9 names "routing decision made **and channel selected**". The existing routing record already carries selected channels | Ambiguous | §4.9, brownfield text, against B-06 | **Assumed** to be one action, already satisfied. If a separate per-channel action is intended, the event count changes. |
+| G-46 | Backward compatibility must be "maintained **or** migration path documented" — which applies is not stated per change, and no consumer inventory exists | Ambiguous | Success Criteria | **Unresolved, per-change.** Adding `PUSH` to a **closed** contract enum (B-12) is the concrete instance: additive for tolerant consumers, breaking for strict ones. |
+| G-47 | "Graceful degradation for provider failures" is undefined, and the obvious reading conflicts with an existing guarantee | **Potential contradiction** | Option 3 key considerations, against phase-1 FR-035 | **RESOLVED 2026-09-09 (D10): out of scope.** The Applicable Functional Requirements name §4.5 — bounded retry across five classifications — as this system's failure handling, and that is delivered. Resilience (circuit breaking, load shedding, channel fallback) is a separate concern the requirements do not ask for. The FR-035 conflict is therefore avoided rather than resolved. |
+| G-48 | Rollback procedures are required, but rollback is not symmetric with rollout for deduplication: notifications suppressed while it was on were never delivered and cannot be recovered | **Missing, with a real consequence** | Phase 3, "document migration paths and rollback procedures" | **Assumed**: rollback restores behaviour going forward only. This MUST be stated in the rollback procedure rather than discovered. |
+| G-49 | Push requires a device token. Phase-1 G-32 already records that the source supplies no destination data; push makes it unavoidable | **Sharpens an existing gap** | Option 1 against §4.1, which defines no destination field | **Unresolved.** An opaque reference is arguable for email; for push it is not, since a token is issued by the platform and has no other source. |
+| G-50 | Option 3's premise is partly already delivered | Overlap with baseline | Option 3 against B-02 | **Recorded.** The interface exists and is enforced. What remains genuinely undone: per-provider error mapping beyond the simulated case, per-provider retry strategy, and graceful degradation. |
+| G-51 | Option 1 asks for a "channel-agnostic abstraction layer" and, two lines later, to "extend the routing logic to support new channel selection criteria" | **Internal tension** | Option 1, key considerations | **Assumed** resolvable: the criteria belong in the routing *policy*, which is data, so the routing *logic* stays channel-agnostic. If push needs channel-specific logic in the router, the two requirements genuinely conflict. |
+| G-52 | The brownfield document restates §4.3, §4.5 and §4.9 with wording that differs from the greenfield document, without saying whether it supersedes it | Ambiguous | Applicable Functional Requirements section | **Assumed superseding** for the sections it restates: §4.3 and §4.9 changes are treated as corrections. §4.5 is unchanged in substance. The greenfield document remains authoritative for sections this one does not restate. |
+
+### Resolved Decisions
+
+#### D6: All three enhancement options are in scope — **decided 2026-09-09 by the project owner** *(closes G-34)*
+
+**The ambiguity**: the document presents three options under "Proposed Enhancement Options",
+phrasing that reads as a choice of one.
+
+**Decision**: all three, plus the cross-cutting brownfield obligations and the two §4.3/§4.9
+corrections.
+
+**Consequences**: the scope is larger than one option, and the three interact — deduplication must
+account for the push channel, and the provider refactoring is shaped by what push introduces.
+Sequencing is therefore not arbitrary: **US1 (push) precedes US2 (refactoring)**, because Option 3
+asks to identify common patterns across channel implementations and today's two channels are
+near-identical simulated adapters (B-01). Adding push creates the divergence worth consolidating;
+refactoring first would extract an abstraction from a single example.
+
+**Cost**: Option 2 brings a constitutional amendment with it (G-33), which is a governance action
+rather than an engineering one and cannot be absorbed into implementation.
+
+#### D7: Deduplication applies at both submission and delivery levels — **decided 2026-09-09 by the project owner**
+
+**The question**: Option 2 contains two separable mechanisms. Submission-level suppression stops
+two *requests* that mean the same thing from both reaching a recipient. Delivery-level
+deduplication stops one *accepted* notification reaching a recipient twice because the worker
+re-attempted it. They solve different problems, and the second could have been taken alone.
+
+**Decision**: both.
+
+**Why the distinction still matters**: they have different justifications and different risk. The
+submission half is a new capability that reverses a recorded decision (D4) and carries an
+asymmetric rollback — notifications suppressed while it was enabled were never delivered and
+cannot be recovered (G-48). The delivery half is a **correction to existing behaviour**: B-13
+records that the worker can genuinely double-send today. Keeping them separate in the requirements
+means each can be flagged, tested, measured and rolled back independently (FR-104).
+
+**Correction to an earlier reading**: the delivery half was initially assessed as not needing the
+constitutional amendment. That was wrong. Register item 9 names "at-least-once duplicate-execution
+handling, and provider-call deduplication" alongside duplicate-submission semantics, and v2.0.0
+struck the "derived per-attempt provider idempotency key" from Principle III — which is exactly
+the delivery half. **One amendment covers both.**
+
+#### D8: Priority is not a routing factor in this phase — **decided 2026-09-09 by the project owner** *(closes G-35; leaves phase-1 G-15 open)*
+
+**The observation**: the brownfield §4.3 reads "notification severity **and priority levels**"
+where the greenfield §4.3 read "notification severity". An earlier draft of this specification
+treated that delta as a deliberate correction and carried a user story to make `priority`
+influence channel selection.
+
+**Decision**: out of scope. There is no requirement specific to priority in the brownfield
+scenario.
+
+**Why that reading is better**: the phrase occurs only inside a "factors **such as**" list, within
+a section headed "**Applicable** Functional Requirements" — which supplies context for the three
+enhancement options rather than issuing new requirements. None of the three options mentions
+priority among its key considerations. Treating an incidental restatement as a mandate would have
+invented a requirement, which is the failure this specification discipline exists to prevent.
+
+**Consequences**: the priority user story, its five requirements and its success criterion are
+removed. **Phase-1 G-15 stays open and unchanged** — `priority` remains a mandatory submission
+field that drives no behaviour, and that remains a limitation to declare rather than a defect
+fixed here.
+
+**Still open**: whether the same reasoning applies to the §4.9 wording differences, which sit in
+the same "Applicable Functional Requirements" section. See G-54.
+
+#### D9: The deduplication boundary is (source system, event identifier) — **decided 2026-09-09 by the project owner** *(closes G-41; opens G-55, G-56)*
+
+**The question**: Option 2 says "design a deduplication strategy" and requires the boundary to be
+documented — the source delegates the decision rather than making it.
+
+**Decision**: two submissions are duplicates when they share the same source system and the same
+event/correlation identifier. The owner's stated basis: *"event id will be unique for a submitter,
+so combining it with submitter source will give us a unique identifier."*
+
+**Suppression is therefore per notification, not per recipient.** A second submission bearing an
+already-seen pair is suppressed in full, whatever recipients it names. That follows from the basis:
+if an event identifier is unique per submitter, a second submission under the same identifier is by
+definition the same event, and a differing recipient list means the caller erred rather than
+expressed a new intent.
+
+**What this rests on, and cannot enforce**: uniqueness is a *caller contract*, not a system
+guarantee. Neither source document requires the event/correlation identifier to be unique, and the
+delivered system does not constrain it — `correlation_id` is indexed but not unique, and the
+published contract describes it only as keying the audit history. If a caller violates the
+contract, notifications are **silently suppressed and never delivered** — the most damaging failure
+mode this feature can have, because nothing surfaces it. Recorded as G-55.
+
+**Backward-compatibility consequence** (G-56): this gives an existing field a new, load-bearing
+meaning. Callers integrated against phase 1 were never told the identifier must be unique and may
+legitimately reuse it today. Enabling deduplication against such a caller silently drops their
+notifications. This is what FR-103's migration path and FR-104's feature flag are for, and the
+migration path MUST require callers to audit their identifier usage before the flag is enabled.
+
+#### D10: Resilience is out of scope; §4.5 defines failure handling — **decided 2026-09-09 by the project owner** *(closes G-47)*
+
+**The question**: Option 3's key considerations include "implement graceful degradation for
+provider failures". The phrase is undefined, and its most natural reading — reroute to another
+channel when a provider fails — contradicts phase-1 FR-035, which forbids attempting a delivery on
+a channel absent from its recorded routing decision.
+
+**Decision**: out of scope. The requirement asks for **retry and failure handling**, which §4.5
+defines precisely: a bounded retry strategy distinguishing transient provider failure, permanent
+provider rejection, invalid recipient, timeout, and authentication or authorization error. That is
+delivered and unchanged.
+
+**How this differs from D8**: the priority removal corrected a *misreading* — a phrase inside a
+"factors such as" list treated as a mandate. This is a **scoping decision**: "graceful degradation"
+genuinely appears in the source, as a key consideration under Option 3. It is being scoped out
+deliberately, not reinterpreted away, and the distinction matters for anyone auditing the spec
+against the document.
+
+**Consequences**: FR-133 is removed, and US2's fourth acceptance scenario becomes a statement of
+what is deliberately absent. **FR-035 survives untouched** — the conflict is avoided rather than
+resolved, which is the cheaper outcome. What remains of Option 3 is per-provider error-code
+mapping and per-provider retry strategies; see G-57 for what that leaves.
+
+**What is thereby not built**: circuit breaking, load shedding, and channel fallback. A provider
+outage lasting beyond the retry window will exhaust the deliveries in flight against it, and those
+deliveries are terminal — dead-letter replay is out of scope by constitution register item 10.
+This is a known and accepted consequence, and belongs in the limitations deliverable.
+
+### Open Questions
+
+**None.** All four questions raised during drafting are resolved: D6 (scope),
+D7 (deduplication levels), D8 (priority), D9 (deduplication boundary), D10 (resilience).
+What remains open is recorded in the Gap Register with working answers, plus one governance
+precondition — the constitutional amendment required by US3.
+
+## Assumptions
+
+Each is a working answer to a Gap Register entry. None is a source requirement, and each flows
+into the limitations deliverable if unconfirmed at implementation time.
+
+- **[A ← G-41 / D9]** The deduplication window is bounded and configurable. Neither source states a
+  duration, so any starting value is an engineering assumption in the same class as the phase-1
+  retry bounds (G-08) — not a requirement, and changeable without a spec change.
+- **[A ← G-41 / D9]** A terminally failed notification does not suppress a later submission of the
+  same pair (FR-141c).
+- **[A ← G-55]** Submitting systems supply event identifiers unique within their own source system.
+  The service cannot verify this. Where the assumption does not hold for a caller, deduplication
+  must not be enabled for them.
+- **[A ← G-36]** "Configured channels" means the routing policy's channel enablement, which
+  already exists. If it means per-recipient configuration, it is a second instance of G-26.
+- **[A ← G-37]** Push credentials come from configuration or a secret manager and never enter
+  audit, logs, metric labels or responses. The provider and scheme are unnamed.
+- **[A ← G-39]** One feature flag per enhancement, default off, per-deployment rather than
+  per-caller, removable once an enhancement becomes permanent.
+- **[A ← G-43]** "Uncontrolled" duplication is read as: a duplicate provider call is tolerable, a
+  second user-visible notification is not — at-least-once processing with at-most-once visible
+  effect.
+- **[A ← G-44]** "Retry executed" is a distinct action from "retry scheduled".
+- **[A ← G-45]** "Routing decision made and channel selected" is one action, already satisfied by
+  the existing record.
+- **[A ← G-48]** Rollback restores behaviour going forward only. Notifications suppressed while
+  deduplication was enabled are not recoverable, and the rollback procedure must say so.
+- **[A ← G-51]** Push's selection criteria are expressible as policy data, so the routing logic
+  stays channel-agnostic. If push requires channel-specific logic in the router, Option 1's two
+  requirements genuinely conflict.
+- **[A ← G-52]** The brownfield document supersedes the greenfield document for the sections it
+  restates; the greenfield document remains authoritative elsewhere.
+- **[A — process]** Phase-1 gaps G-26 (recipient preferences) and G-32 (destination data) survive
+  unchanged. This is the **second** document to name recipient preferences as a routing factor
+  without supplying them.
+
+## Dependencies
+
+- **[E ← Option 2]** A constitutional amendment lifting the idempotency deferral is a prerequisite
+  for US3. It is a governance action, not an implementation task, and blocks that story alone.
+- **[E ← Option 1]** A push provider must be reachable for a real delivery to succeed. Under G-22
+  it is simulated, so nothing here proves interoperability.
+- **[A ← G-49]** Push delivery needs a device token that no source document supplies. The
+  simulated provider accepts the opaque recipient reference; a real one would not.
+- **[B]** The phase-1 test suite is the regression baseline for FR-102, and must pass unmodified
+  except where a change is individually justified.
