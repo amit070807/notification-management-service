@@ -54,7 +54,8 @@ be reviewed. Each is verifiable in the phase-1 codebase.
 | **B-10** | No feature-flag mechanism exists | No flag infrastructure in the codebase |
 | **B-11** | No performance or load testing exists, and no targets are asserted | Phase-1 G-11 |
 | **B-12** | The API contract declares `Channel` as a **closed** enum with values `EMAIL`, `SMS` | `contracts/openapi.yaml` |
-| **B-13** | **The worker can double-send.** Delivery processing is at-least-once by design: a lease can expire, or a process can die after the provider call but before the state write, and the delivery is then re-attempted. No provider-call idempotency key exists — constitution v2.0.0 explicitly struck the "derived per-attempt provider idempotency key" from Principle III | `DeliveryWorker`, `claimDue` lease; constitution v2.0.0 sync report |
+| **B-13** | **A delivery orphaned mid-attempt is stranded permanently.** `claimDue` claims only `QUEUED` and `RETRY_SCHEDULED`; a worker or provider crash after the move to `IN_PROGRESS` leaves the row unclaimable, and nothing sweeps stale leases or resets the state. It never reaches a terminal state, and rollup rule 2b then reports the notification as `IN_PROGRESS` indefinitely — status lies about work that will never complete. **Corrected 2026-09-09**: an earlier draft called this a double-send. It is not, because a stranded row is never re-claimed | `JdbcDeliveryRepository.claimDue`, `DeliveryProcessingService.attempt`; verified by inspection — no recovery path exists |
+| **B-14** | **No provider-call idempotency key exists**, and no agreement with a provider about duplicate handling. Constitution v2.0.0 struck the "derived per-attempt provider idempotency key" from Principle III. Harmless today only because B-13 means an orphaned delivery is never retried at all | constitution v2.0.0 sync report; `ChannelProviderPort.send` signature |
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -172,16 +173,28 @@ distinct problems:
 | Level | Problem | Actor |
 |---|---|---|
 | **Submission** | Two requests that mean the same thing should not both reach the recipient | the caller |
-| **Delivery** | One accepted notification should not reach the recipient twice because the worker re-attempted it | the system |
+| **Delivery** | An accepted notification must reach a terminal state even if a worker or provider crashes mid-attempt, and a re-attempt must not reach the recipient twice | the worker, **with the provider** |
 
-The delivery half addresses B-13, a real hole in the delivered system: our worker is at-least-once,
-so a lease expiring between the provider call and the state write produces a genuine second send
-today. It is the half that most deserves the word "brownfield" — a correction to existing behaviour
-under load rather than a new capability.
+The delivery half addresses B-13 and B-14, which are **coupled**. Today a delivery orphaned by a
+worker or provider crash is stranded in `IN_PROGRESS` and never retried — which is the only reason
+it has not also produced duplicate sends. **Reclaiming it is necessary**, because status otherwise
+reports it as in progress forever, and **reclaiming it is exactly what creates the duplicate-send
+exposure**: the provider may already have processed the call that the crash prevented us recording.
+
+**Where responsibility sits (D12)**: duplicate suppression at delivery is an *agreement between the
+worker and the provider*, not something the worker can enforce alone. The worker's obligations are
+to reclaim the stranded delivery and to send a key that is stable across re-attempts. Recognising
+that key and not processing the same send twice is the **provider's** obligation. This service
+cannot implement the provider's half, and pretending otherwise would be inventing a guarantee it
+does not hold.
+
+This is the half that most deserves the word "brownfield": a correction to delivered behaviour
+under conditions the happy path never exercises.
 
 **Independent Test**: (submission) Submit two notifications the configured boundary treats as
-duplicates and confirm the second is suppressed and visible as such. (delivery) Force a
-re-attempt after a successful provider call and confirm no second user-visible send occurs.
+duplicates and confirm the second is suppressed and visible as such. (delivery) Orphan a delivery
+mid-attempt, confirm it is reclaimed and reaches a terminal state, and confirm the re-attempt
+carries the same key as the attempt it is repeating.
 
 **Acceptance Scenarios**:
 
@@ -191,16 +204,21 @@ re-attempt after a successful provider call and confirm no second user-visible s
    audit history is read, **Then** the suppression is recorded.
 3. **[E — "reflected in status or audit history"]** **Given** a suppressed submission, **When**
    its status is retrieved, **Then** the suppression is visible to the caller.
-4. **[E — "reprocessing a queued delivery must not create uncontrolled duplicate side effects"]**
-   **Given** a queued delivery whose provider call succeeded but whose state write did not,
-   **When** the lease expires and it is re-attempted, **Then** the recipient receives one
-   notification, not two — **"uncontrolled" is undefined; see G-43.**
-5. **[C ← B-13]** **Given** the delivery half is in force, **When** any provider call is made,
-   **Then** it carries a key stable across re-attempts of the same attempt, so a repeat is
-   recognisable by the provider as the same send.
-6. **[C ← FR-104]** **Given** either half is switched off, **When** submissions and deliveries are
-   processed, **Then** behaviour matches the phase-1 baseline exactly.
-7. **[C ← constitution v2.1.0]** **Given** the amendment is in force, **When** the delivered
+4. **[C ← B-13]** **Given** a delivery orphaned in `IN_PROGRESS` by a worker or provider crash,
+   **When** its lease has expired, **Then** it is reclaimed rather than stranded, and the
+   notification eventually reaches a terminal state.
+5. **[C ← B-14, D12]** **Given** a reclaimed delivery is re-attempted, **When** the provider call
+   is made, **Then** it carries the same key as the attempt it repeats, so the provider can
+   recognise it as the same send rather than a new one.
+6. **[E — "reprocessing a queued delivery must not create uncontrolled duplicate side effects"]**
+   **Given** a provider that honours that key, **When** a reclaimed delivery repeats a call the
+   provider already processed, **Then** the recipient receives one notification, not two —
+   **"uncontrolled" is undefined; see G-43. The provider's half is assumed, not implemented; see
+   G-59.**
+7. **[C ← FR-104]** **Given** either half is switched off, **When** submissions and deliveries are
+   processed, **Then** behaviour matches the phase-1 baseline exactly — including, for the delivery
+   half, the stranding behaviour of B-13.
+8. **[C ← constitution v2.1.0]** **Given** the amendment is in force, **When** the delivered
    `DuplicateSubmissionTest` is re-read, **Then** it is replaced rather than deleted — it encodes
    the behaviour this story reverses, and deleting it would erase the record of the change.
 
@@ -341,7 +359,9 @@ ordered.
   The service MUST NOT infer it and MUST NOT silently repair a violation. **See G-55: neither
   source document requires this identifier to be unique, and the service cannot enforce it.**
 - **FR-141b [C ← FR-141]**: A deduplication window MUST bound how long a pair suppresses later
-  submissions. **No duration is stated by either source — a default is recorded in Assumptions.**
+  submissions. **[A ← D14]** The default is **24 hours**, configurable. Neither source states a
+  duration; this is an engineering assumption in the same class as the phase-1 retry bounds (G-08),
+  not a requirement.
 - **FR-141c [D]**: A notification that reached a terminal *unsuccessful* state MUST NOT suppress a
   later submission of the same pair. *(Design-derived: suppressing after a permanent failure would
   make that failure unrecoverable by the caller, turning a delivery problem into silent data loss.
@@ -350,8 +370,15 @@ ordered.
   boundary and its retention policy MUST be documented as a deliverable.
 - **FR-143 [E — "track suppressed notifications in audit history"]**: Every suppression MUST be
   recorded in audit history.
-- **FR-144 [E — "reflected in status or audit history"]**: A suppressed submission MUST be visible
-  to the caller through status retrieval or audit history.
+- **FR-144 [A ← D13]**: A suppressed submission MUST be reported to the caller **in the response to
+  that submission**, not only in audit history. The response MUST identify the original notification
+  the submission duplicated, so the caller can inspect it.
+- **FR-144a [C ← FR-144]**: The response MUST be distinguishable from an acceptance **without
+  reading the body**, because a caller that ignores an unfamiliar field would otherwise believe its
+  notification was accepted — reintroducing the silent failure in a quieter form.
+- **FR-144b [C ← FR-144 + FR-104]**: A suppression response can only occur once deduplication is
+  enabled for that caller, so it is never a surprise to a caller who has not opted in through the
+  migration path (G-56).
 - **FR-146 [C ← FR-140 + phase-1 D4]**: Phase-1 FR-008b — that two submissions sharing a client
   identifier become two independent notifications — MUST be revised, and the test asserting the
   second is not suppressed MUST be replaced rather than deleted.
@@ -360,26 +387,38 @@ ordered.
 
 #### Deduplication — delivery level (Option 2, second half; D7)
 
-*Addresses B-13: a real hole in the delivered system rather than a new capability. The worker is
-at-least-once, so a lease expiring between a successful provider call and the state write produces
-a genuine second send today.*
+*Addresses B-13 and B-14, which are coupled: an orphaned delivery is stranded today, reclaiming it
+is necessary, and reclaiming it is what creates the duplicate exposure. Responsibility is split by
+D12 — the worker reclaims and supplies the key; the provider recognises it.*
 
+- **FR-159 [C ← B-13]**: A delivery left non-terminal by a worker or provider that stopped
+  mid-attempt MUST be reclaimable once its lease has expired, so that every delivery eventually
+  reaches a terminal state. A delivery that can neither progress nor fail is worse than one that
+  fails, because status reports it as in progress indefinitely.
+- **FR-159a [C ← FR-159]**: Reclaiming MUST NOT bypass the bound: a reclaimed delivery MUST consume
+  its retry budget in the same way as any other attempt, or a repeatedly crashing provider could
+  produce unbounded attempts.
+- **FR-159b [C ← FR-159 + baseline FR-034]**: Expiry MUST still outrank reclaim. A stranded
+  delivery whose notification has since expired MUST reach `EXPIRED`, not be re-attempted.
 - **FR-160 [E — "reprocessing a queued delivery must not create uncontrolled duplicate side
-  effects"]**: Reprocessing a queued delivery MUST NOT produce uncontrolled duplicate side
-  effects. **"Uncontrolled" is undefined — see G-43.**
-- **FR-161 [C ← FR-160 + B-13]**: A provider call MUST carry a key that is stable across
-  re-attempts of the same logical attempt, so that a repeat is recognisable to the provider as the
-  same send rather than a new one.
-- **FR-162 [C ← FR-160]**: A delivery whose provider call succeeded but whose outcome was not
-  recorded MUST NOT produce a second user-visible notification when re-processed.
-- **FR-163 [C ← FR-161 + baseline]**: The key MUST be derivable from data the system already
-  holds, so that it is identical on every re-attempt without needing to have been stored before
-  the crash that caused the re-attempt.
+  effects"]**: Reprocessing a delivery MUST NOT produce uncontrolled duplicate side effects.
+  **"Uncontrolled" is undefined — see G-43.**
+- **FR-161 [C ← FR-160 + FR-159 + D12]**: Every provider call MUST carry a key that is stable
+  across re-attempts of the same logical attempt, so a repeat is recognisable to the provider as
+  the same send rather than a new one. **This is the worker's half of the agreement.**
+- **FR-162 [A ← D12]**: The provider is responsible for recognising that key and not processing the
+  same send twice. This service MUST NOT claim to prevent duplicate delivery on its own — it
+  supplies the key and assumes the provider honours it. **See G-59: with a provider that ignores
+  the key, a reclaimed delivery can produce a duplicate, and this service cannot detect it.**
+- **FR-163 [C ← FR-161]**: The key MUST be derivable from data the system already holds, so it is
+  identical on every re-attempt without having needed to be stored before the crash that caused
+  the re-attempt.
 - **FR-164 [C ← FR-160 + FR-104]**: With delivery-level deduplication switched off, delivery
-  behaviour MUST be identical to the phase-1 baseline — including its at-least-once exposure.
-- **FR-165 [C ← B-13 + constitution]**: This restores, in substance, the "derived per-attempt
-  provider idempotency key" that constitution v2.0.0 struck from Principle III. The amendment MUST
-  therefore reinstate that rule rather than adding an unrelated one.
+  behaviour MUST be identical to the phase-1 baseline — including the stranding behaviour of B-13,
+  since reclaim is part of this half.
+- **FR-165 [C ← B-14 + constitution v2.1.0]**: The key restores, in substance, the "derived
+  per-attempt provider idempotency key" that v2.0.0 struck from Principle III and v2.1.0
+  reinstated.
 
 ### Audit vocabulary (§4.9 correction)
 
@@ -451,7 +490,9 @@ a genuine second send today.*
 - **SC-108 [C ← FR-132]**: No delivery on any channel exceeds its configured attempt bound,
   including channels with a provider-specific strategy.
 - **SC-109 [E ← Option 2, submission level]**: A duplicate submission is suppressed, produces no
-  second delivery, and is visible to the caller as suppressed rather than silently discarded.
+  second delivery, and returns a response the caller can distinguish from an acceptance **without
+  reading the body** — verified by asserting the status code alone, since that is what a consumer
+  ignoring unfamiliar fields would see.
 - **SC-109a [E ← Option 2, delivery level]**: A delivery whose provider call succeeded but whose
   state write did not is re-processed and produces **one** user-visible notification, not two —
   demonstrated by forcing that exact interleaving rather than by inspection.
@@ -482,7 +523,9 @@ remains a candidate for correction and flows into the limitations deliverable.
 | G-33 | **Option 2's premise was false.** It says it builds "upon the existing idempotency mechanism"; no such mechanism exists | **Contradiction between source and system** | Option 2 preamble, against constitution v2.0.0 item 9 and phase-1 D4/FR-008b | **RESOLVED 2026-09-09: constitution amended to v2.1.0.** Register item 9 names duplicate-submission semantics, at-least-once duplicate-execution handling and provider-call deduplication together, so one amendment covers both levels. Also requires revising D4 and FR-008b, which the submission half reverses. |
 | G-54 | If §4.3's wording delta is context rather than requirement (D8), the §4.9 deltas sit in the same section and may be too | **Consistency question raised by D8** | "Applicable Functional Requirements" heading, §4.9 | **RESOLVED 2026-09-09 (D11): §4.9 applies, scoped to retry and failure handling.** The sections differ in kind: §4.3 offers "factors such as" and no option names priority; §4.9 issues a directive about what must be recorded, and retry and failure handling is what this phase changes. |
 | G-57 | With graceful degradation out of scope (D10) and the provider abstraction already delivered (G-50), Option 3's remaining new work is narrow: per-provider error-code mapping and per-provider retry strategies | **Scope observation, not a gap in the source** | Option 3 after D10 | **Recorded.** Both remaining items are needed by Option 1 regardless — push introduces the first genuinely different provider error vocabulary. Option 3 may therefore be largely satisfied as a by-product of Option 1 rather than as separate work. Worth confirming before planning. |
-| G-53 | The delivered worker can double-send: a lease expiring between a successful provider call and the state write causes a re-attempt with no provider-side key to recognise it | **Defect in the existing system**, not a gap in the source | Discovered from B-13 while scoping Option 2's second half | **Unresolved until the amendment lands.** Addressed by FR-160–FR-165. Worth noting it is invisible in normal operation and appears only under lease expiry or process death — exactly the conditions least likely to be exercised before production. |
+| G-53 | **A delivery orphaned mid-attempt is stranded permanently.** `claimDue` claims only QUEUED and RETRY_SCHEDULED, nothing sweeps stale leases, and no path resets IN_PROGRESS. The notification then reports IN_PROGRESS indefinitely | **Defect in the existing system**, not a gap in the source | Found while scoping Option 2's second half; verified by inspection | **Addressed by FR-159.** **Corrected 2026-09-09**: first recorded as a double-send, which was wrong — a stranded row is never re-claimed, so no duplicate occurs today. The real harm is silent and permanent rather than duplicated, and arguably worse: a failure at least ends. |
+| G-58 | Fixing G-53 creates a duplicate-send exposure that does not exist today: a reclaimed delivery may already have had a successful provider call | **Consequence of the fix**, not an independent defect | Created by FR-159 against B-14 | **Addressed by FR-161–FR-163 plus D12.** The two must land together — reclaiming stranded deliveries without a key would trade a silent stall for a silent duplicate. |
+| G-59 | **Delivery-level duplicate suppression depends on the provider honouring the key.** This service supplies it and cannot verify it is respected | **Assumed counterparty behaviour** | Created by the D12 split of responsibility | **Assumed, per D12.** Simulated providers honour it, so the worker's half is demonstrable; that demonstration proves nothing about a real provider. Against one that ignores the key, a reclaimed delivery can duplicate and this service cannot detect it. Belongs in the DO-004 limitations beside G-22. |
 | G-34 | The document presents three options as alternatives ("Proposed Enhancement Options") | Ambiguous scope | Enhancement Options section | **RESOLVED 2026-09-09 (D6).** The project owner directed that all three be covered. |
 | G-35 | The brownfield §4.3 text reads "notification severity **and priority levels**" where the greenfield text read "notification severity" | **Wording difference between source documents** | §4.3, under the heading "Applicable Functional Requirements" | **RESOLVED 2026-09-09 (D8): out of scope.** Priority appears only inside a "factors such as" list, in a section that supplies context for the enhancement options rather than new requirements, and no option names priority in its key considerations. Recorded so the difference is not lost, but not implemented. **Phase-1 G-15 stays open**: `priority` remains a mandatory field that drives no behaviour. |
 | G-36 | §4.3 introduces "configured channels" as a new term, undefined — configured by whom, stored where, distinct from the policy's enabled channels or not | Missing | §4.3, brownfield text | **Assumed** to mean the policy's channel enablement, which already exists. If it means a per-recipient configuration, it is a second form of G-26 and equally unsupplied. |
@@ -491,7 +534,7 @@ remains a candidate for correction and flows into the limitations deliverable.
 | G-39 | Feature flags are required but their granularity, rollout criteria and lifecycle are unstated | Missing | Implementation Phase 2, "feature flags for gradual rollout" | **Assumed**: one flag per enhancement, default off, removable once an enhancement is permanent. "Gradual" is assumed to mean per-deployment, not per-caller or percentage-based. |
 | G-40 | Performance impact must be "measurable and acceptable" and load testing is required, but no target defines acceptable | Missing | Phase 3 and Success Criteria, against phase-1 G-11 | **Unresolved, non-blocking.** Measurement is specified; no pass/fail criterion is asserted. G-11 survives. |
 | G-41 | The deduplication boundary is explicitly delegated — what makes two submissions duplicates, over what window, and whether a failed original resets it | **Delegated by the source** | Option 2, "design a deduplication strategy" | **RESOLVED 2026-09-09 (D9).** Key: (source system, event identifier); suppression per notification. Window duration and failure-reset behaviour are assumptions, not source requirements. |
-| G-55 | **Deduplication correctness depends on a caller contract the service cannot enforce.** Neither source document requires the event/correlation identifier to be unique, and phase 1 does not constrain it — `correlation_id` is indexed, not unique, and the contract describes it only as keying audit history | **Unenforceable precondition** | Created by the D9 resolution of G-41 | **Unresolved.** If a caller reuses an identifier, notifications are silently suppressed and never delivered, with nothing to surface it. Mitigations available and unchosen: reject on detected reuse with differing content; warn and deliver; or publish the uniqueness requirement in the contract. |
+| G-55 | **Deduplication correctness depends on a caller contract the service cannot enforce.** Neither source document requires the event/correlation identifier to be unique, and phase 1 does not constrain it — `correlation_id` is indexed, not unique, and the contract describes it only as keying audit history | **Unenforceable precondition** | Created by the D9 resolution of G-41 | **MITIGATED 2026-09-09 (D13).** A caller that reuses an identifier is told on the first duplicate, in the response, naming the original notification. The precondition remains unenforceable — the service still cannot verify uniqueness — but the failure is no longer silent, which was the damaging part. |
 | G-56 | Enabling deduplication changes the meaning of an existing field for existing callers, who were never told it must be unique | **Backward-compatibility risk** | Created by D9, against phase-1 FR-002/FR-048 and the published contract | **Unresolved.** FR-103's migration path MUST require callers to audit identifier usage before the flag is enabled; FR-104's flag is what makes that audit possible before any suppression occurs. |
 | G-42 | The boundary and retention policy "must be documented" — an obligation on the deliverable, not a behaviour | Explicit obligation | Option 2 | **Tracked** as FR-142; satisfied only when G-41 is answered. |
 | G-43 | "Reprocessing a queued delivery must not create uncontrolled duplicate side effects" — "uncontrolled" is undefined, implying some duplication is controlled and acceptable | Ambiguous | Option 2 | **Assumed**: a duplicate provider call is acceptable if it cannot produce a second user-visible notification; the phrase is read as at-least-once processing with at-most-once visible effect. |
@@ -653,6 +696,92 @@ introduces suppression as a recordable action.
   a reader can see it was checked, not overlooked (G-45 confirmed).
 - Audit for push-specific failure conditions falls in scope through the same clause (FR-150b).
 
+#### D12: The worker reclaims and supplies the key; the provider deduplicates — **decided 2026-09-09 by the project owner** *(shapes FR-159 – FR-165; opens G-59)*
+
+**The situation**: a worker or provider crash mid-attempt leaves a delivery stranded in
+`IN_PROGRESS` (B-13). Reclaiming it is necessary — otherwise status reports it as in progress
+forever — but reclaiming it means possibly repeating a provider call that already succeeded, which
+the service has no way to detect (B-14).
+
+**Decision**, in the owner's words: *"Idempotency should be implemented on the provider side to
+ensure no duplicates are processed. It is an agreement between delivery worker and provider on how
+to handle dedup at the provider end. For now we can assume the provider has the mechanism."*
+
+**The split**:
+
+| Obligation | Owner |
+|---|---|
+| Reclaim a delivery stranded by a crash | **this service** (FR-159) |
+| Send a key stable across re-attempts of the same attempt | **this service** (FR-161, FR-163) |
+| Recognise the key and not process the same send twice | **the provider** (FR-162) |
+
+**Why this split is the honest one**: duplicate suppression at the delivery boundary is not
+achievable by the sender alone. Once a call has left this service, whether it was processed is
+knowable only to the provider. The service can make a repeat *recognisable*; it cannot make it
+*harmless*. Claiming otherwise would assert a guarantee this system does not hold — the same class
+of error as inventing a data source for an input the requirements never supply.
+
+**What is therefore assumed, not built** (G-59): that the delivery provider honours the key. The
+simulated providers will honour it, so the behaviour is demonstrable end to end, but that
+demonstration proves the *worker's* half only. Against a real provider that ignores the key, a
+reclaimed delivery can produce a duplicate and this service cannot detect it. That belongs in the
+limitations deliverable, next to G-22.
+
+#### D13: Suppression is reported to the caller in the submission response — **decided 2026-09-09 by the project owner** *(mitigates G-55; fixes the response representation)*
+
+**The question**: G-55 records that deduplication rests on a caller contract the service cannot
+enforce — event identifiers unique per source system. If a caller violates it, notifications are
+suppressed. The open decision was how loudly that fails.
+
+**Decision**: *"we need to have a response for a caller with suppression."* Every suppression is
+reported to the caller in the response to the submission that was suppressed, naming the original
+notification it duplicated.
+
+**Why this is the mitigation, not merely a representation**: the G-55 risk was never really a choice
+between rejecting, warning, or publishing a contract clause. It was that suppression could be
+**silent** — a notification that never arrives and never errors, which no ordinary test or alert
+catches. A caller that has reused an identifier now discovers it on the very first duplicate rather
+than from a support ticket weeks later. Silence was the danger; the response removes it.
+
+**Response shape**: `200 OK` with a suppression body, rather than `202 Accepted`.
+
+`202` means *accepted for processing*, and a suppressed submission creates no delivery — returning
+it would misreport what happened. The alternative considered and rejected was `202` carrying a
+`suppressed: true` field: purely additive and therefore the most literal reading of FR-103, but a
+consumer ignoring unfamiliar fields would see `202` and believe its notification was accepted. That
+is the same silent failure in a quieter form, moved from "no difference" to "a difference they will
+not notice". FR-144a makes being noticeable a requirement rather than a hope.
+
+`409 Conflict` was also rejected: `4xx` implies caller error, but suppression is the system working
+as designed on a legitimate request, and it would make routine deduplication appear as failure in
+every client's error metrics.
+
+**Backward-compatibility cost, and why it is bounded**: a new status code on an operation that has
+only ever returned `202` or `400` is a real change for consumers that switch on status. The feature
+flag bounds it — a suppression response can only occur once deduplication is enabled for that
+caller, which per G-56 requires the migration-path audit first. The status code cannot appear before
+the caller has been told to expect it.
+
+#### D14: The deduplication window defaults to 24 hours — **decided 2026-09-09 by the project owner**
+
+**The question**: FR-141b requires the window to be bounded. Neither source document states a
+duration, so the value had to come from somewhere.
+
+**Decision**: 24 hours, configurable, recorded as an assumption rather than a requirement.
+
+**No constitutional amendment is needed.** Principle III (v2.1.0) requires a deduplication boundary
+to be "defined and documented — what makes two submissions duplicates, over what window". It
+requires the window to *exist and be documented*, not to hold a particular value. An earlier plan
+note (U-6) suggested this belonged in the constitution's Declared Operating Defaults beside the
+retry bounds; on inspection that was over-cautious. Those values are constitutional because they
+predate any specification — this one has a specification to live in.
+
+**What 24 hours costs**: a caller that legitimately repeats the same event within a day has the
+repeat suppressed. Under D9 the event identifier is unique per submitter, so a genuine repeat would
+carry a new identifier and this cannot arise — but it is exactly where D9's caller contract is most
+likely to break in practice, through a periodic job reusing an identifier. D13 ensures the caller is
+told rather than left to discover missing notifications.
+
 ### Open Questions
 
 **None.** All four questions raised during drafting are resolved: D6 (scope),
@@ -665,9 +794,14 @@ precondition — the constitutional amendment required by US3.
 Each is a working answer to a Gap Register entry. None is a source requirement, and each flows
 into the limitations deliverable if unconfirmed at implementation time.
 
-- **[A ← G-41 / D9]** The deduplication window is bounded and configurable. Neither source states a
-  duration, so any starting value is an engineering assumption in the same class as the phase-1
-  retry bounds (G-08) — not a requirement, and changeable without a spec change.
+- **[A ← G-41 / D14]** The deduplication window defaults to **24 hours** and is configurable.
+  Neither source states a duration, so this is an engineering assumption in the same class as the
+  phase-1 retry bounds (G-08) — not a requirement, and changeable without a spec change.
+  **Consequence worth stating**: a caller that deliberately repeats the same event within 24 hours —
+  a daily reminder reusing one event identifier, say — has the repeat suppressed. Under D9's caller
+  contract a genuine repeat carries a new identifier, so this cannot arise; but it is precisely the
+  case where that contract is most likely to be broken in practice, by a periodic job. D13 ensures
+  the caller is told rather than left guessing.
 - **[A ← G-41 / D9]** A terminally failed notification does not suppress a later submission of the
   same pair (FR-141c).
 - **[A ← G-55]** Submitting systems supply event identifiers unique within their own source system.

@@ -22,10 +22,19 @@ Motivating requirement and evidence:
   The brownfield requirements document (Option 2) requires deduplication. Register item 9
   itself required these semantics to be "specified before any production use" and deferred
   them "to a later deliverable" - feature 002 is that deliverable, so the deferral is being
-  honoured on its own terms rather than overridden. Evidence of need beyond the document:
-  baseline fact B-13 in feature 002 records that the delivered worker can genuinely
-  double-send, because a lease can expire between a successful provider call and the state
-  write with no key for the provider to recognise the repeat.
+  honoured on its own terms rather than overridden.
+
+  Evidence of need beyond the document (corrected 2026-09-09 after inspecting the code):
+  baseline fact B-13 records that a delivery orphaned by a worker or provider crash is
+  STRANDED in IN_PROGRESS permanently - claimDue claims only QUEUED and RETRY_SCHEDULED, and
+  nothing sweeps stale leases. The notification then reports IN_PROGRESS indefinitely for work
+  that will never complete.
+
+  An earlier draft of this record described that as a double-send. It is not: a stranded row
+  is never re-claimed, so no duplicate occurs today. The two are nonetheless coupled, and that
+  coupling is the real argument for this amendment - reclaiming stranded deliveries is
+  necessary, and reclaiming them is precisely what creates the duplicate-send exposure. The
+  key required by the rules below is what makes that fix safe.
 
 Impact on existing code and tests:
   - Delivered code becomes NON-COMPLIANT on two counts: no provider call carries a stable
@@ -65,7 +74,7 @@ Modified principles:
     Restored: the at-least-once "workers MUST be safe to re-run on the same item" bullet,
     struck in v2.0.0, now cross-referencing Principle III.
   - VI. Test-First: duplicate submission returns to the required adversarial tests, joined by
-    re-attempt after an unrecorded successful provider call - the B-13 case.
+    reclaim of a delivery stranded mid-attempt - the B-13 case.
   - VIII. Documented Decisions: the deduplication and idempotency strategy returns to the
     mandatory ADR list, now explicitly including boundary, window and caller-contract
     dependencies.
@@ -171,10 +180,19 @@ precondition for testing bounded retry and expiration without real waits (Princi
 Register item 9 deferred these to a later deliverable and required them to be specified "before any
 production use". That deliverable is feature 002, so the deferral is lifted rather than extended.
 
+- **Recoverability.** A delivery left non-terminal by a worker or provider that stopped
+  mid-attempt MUST be reclaimable once its lease has expired, so that every delivery eventually
+  reaches a terminal state. A delivery that can neither progress nor fail is worse than one that
+  fails: status reports it as in progress indefinitely, and nothing surfaces it.
 - **Duplicate-execution safety.** Every provider call MUST carry a key that is stable across
-  re-attempts of the same logical attempt, so that an at-least-once worker re-attempt cannot
-  produce a duplicate user-visible send. The key MUST be derivable from data the system already
-  holds, so it is identical after a crash that occurred before anything could be recorded.
+  re-attempts of the same logical attempt, so that a re-attempt is recognisable to the provider
+  as the same send. The key MUST be derivable from data the system already holds, so it is
+  identical after a crash that occurred before anything could be recorded.
+- **Where duplicate suppression depends on a counterparty**, the division of responsibility MUST
+  be documented and the counterparty's obligation MUST NOT be claimed as this system's guarantee.
+  Whether a call that already left this service was processed is knowable only to the provider:
+  the sender can make a repeat recognisable, it cannot make it harmless. Asserting otherwise
+  would claim a guarantee the system does not hold.
 - **A deduplication boundary MUST be defined and documented** — what makes two submissions
   duplicates, over what window, and whether a terminally failed notification resets it. An
   undocumented boundary is not a strategy; it is behaviour nobody can predict.
@@ -273,8 +291,8 @@ sensitive values, they never contain them.
   - **End-to-end integration test** covering submit → route → persist → queue → attempt →
     transient failure → bounded retry → terminal state → status retrieval → audit history,
     asserting the exact state sequence and the audit trail.
-  - **Adversarial tests**: duplicate submission, re-attempt after a provider call succeeded but
-    its outcome was not recorded, expired notification, zero eligible channels
+  - **Adversarial tests**: duplicate submission, reclaim of a delivery stranded mid-attempt by a
+    worker or provider crash, expired notification, zero eligible channels
     after routing, all five failure classifications, retry budget exhaustion, worker crash
     between attempt and state write, and concurrent workers on one delivery.
 - Tests MUST be deterministic. Sleeps, real wall-clock waits, real network calls, and reliance
