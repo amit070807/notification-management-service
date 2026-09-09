@@ -1,56 +1,86 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: 1.0.0 -> 2.0.0
-Bump rationale: MAJOR. Principle III was redefined by removing obligations: every idempotency
-rule was struck at the project owner's direction, on the basis that idempotency and
-deduplication belong to a later deliverable. Under this document's own versioning policy, a
-principle "removed or redefined in a backward-incompatible way" is a MAJOR change, and the
-removal is backward-incompatible for governance purposes because previously mandatory rules
-are no longer in force. (A MINOR bump would be arguable given that no implementation exists
-yet and the change only relaxes constraints; MAJOR was chosen as the stricter, more
-defensible reading of the stated policy.)
+Version change: 2.0.0 -> 2.1.0
+Bump rationale: MINOR. Existing guidance is materially expanded: Principle III regains
+idempotency obligations and Principles II, VI and VIII are realigned with them. No principle
+is removed, and none is redefined in a backward-incompatible way, so the MAJOR trigger in the
+versioning policy is not met. (An argument for MAJOR exists, since delivered code becomes
+non-compliant. It is answered by the versioning policy naming removal and redefinition as the
+MAJOR triggers, and by the constitution's own rule that an amendment leaving code
+non-compliant requires a linked remediation task rather than a larger version bump. The
+remediation task is feature 002 US3.)
+
+AMENDMENT RECORD (required by the Governance amendment procedure)
+-----------------------------------------------------------------
+Rule changed:
+  Principle III's scope note deferring duplicate-submission semantics, deduplication and
+  provider-call idempotency is removed. Six obligations are added in its place, and Register
+  item 9's deferral is lifted.
+
+Motivating requirement and evidence:
+  The brownfield requirements document (Option 2) requires deduplication. Register item 9
+  itself required these semantics to be "specified before any production use" and deferred
+  them "to a later deliverable" - feature 002 is that deliverable, so the deferral is being
+  honoured on its own terms rather than overridden. Evidence of need beyond the document:
+  baseline fact B-13 in feature 002 records that the delivered worker can genuinely
+  double-send, because a lease can expire between a successful provider call and the state
+  write with no key for the provider to recognise the repeat.
+
+Impact on existing code and tests:
+  - Delivered code becomes NON-COMPLIANT on two counts: no provider call carries a stable
+    key, and no deduplication boundary exists. This is expected and is the point of the
+    amendment.
+  - DuplicateSubmissionTest asserts that a second submission is NOT suppressed. It encodes
+    the behaviour this amendment reverses and MUST be replaced rather than deleted, so the
+    change of intent stays visible in history.
+  - Phase-1 spec decision D4 and FR-008b are superseded for the submission path.
+  - Principle VI now requires two adversarial tests that do not yet exist.
+  - Principle VIII now requires an ADR that does not yet exist.
+
+Migration plan:
+  1. Feature 002 US3 implements both halves behind independent feature flags, default off.
+  2. With the flags off, behaviour is identical to the pre-amendment baseline, so the
+     amendment can merge before the implementation without breaking anything.
+  3. The submission-level boundary depends on a caller contract the service cannot enforce
+     (feature 002 G-55). Before the flag is enabled for any caller, the migration path MUST
+     require that caller to audit its event-identifier usage.
+  4. Rollback is asymmetric and MUST be documented as such: notifications suppressed while
+     the flag was on were never delivered and are not recoverable afterwards.
+
+Linked remediation task (required because this amendment leaves code non-compliant):
+  specs/002-push-dedup-refactor - User Story 3, requirements FR-140 through FR-165.
+
+Approval: project owner, 2026-09-09.
 
 Modified principles:
-  - III. Idempotent, Deterministic Domain Core -> III. Deterministic Domain Core
-    Removed: notification identifier as idempotency key with unique constraint;
-    resubmission-returns-stored-state and conflict-on-divergent-body rules; derived
-    per-attempt provider idempotency key.
-    Retained: pure-function routing, persisted routing input snapshot and decision,
-    injected clock and id ports. Principles VI and VII depend on these.
+  - III. Deterministic Domain Core -> III. Idempotent, Deterministic Domain Core
+    Added: duplicate-execution safety via a stable per-attempt provider key; a documented
+    deduplication boundary; observable suppression; no suppression after terminal failure;
+    switchable and inert-when-off; documented caller-contract dependencies.
+    Retained unchanged: pure-function routing, persisted routing decision, injected clock and
+    id ports. Principles VI and VII still depend on these.
+    Removed: the scope note deferring these concerns.
   - II. Durable Accept-Then-Process Asynchrony
-    Removed: the at-least-once "workers MUST be safe to re-run on the same item" bullet.
-    Retained: durable-commit-before-ack, transactional outbox, worker lease/locking.
-  - VI. Test-First: removed "duplicate submission" from the required adversarial tests.
-  - VIII. Documented Decisions: removed "idempotency strategy" from the mandatory ADR list.
+    Restored: the at-least-once "workers MUST be safe to re-run on the same item" bullet,
+    struck in v2.0.0, now cross-referencing Principle III.
+  - VI. Test-First: duplicate submission returns to the required adversarial tests, joined by
+    re-attempt after an unrecorded successful provider call - the B-13 case.
+  - VIII. Documented Decisions: the deduplication and idempotency strategy returns to the
+    mandatory ADR list, now explicitly including boundary, window and caller-contract
+    dependencies.
 
-Added sections (v1.0.0, initial ratification, retained):
-  - Core Principles I-VIII
-  - Architectural and Operational Constraints (6 subsections)
-  - Development Workflow and Quality Gates (5 subsections)
-  - Governance (with Assumption and Ambiguity Register)
+Added sections: none. Principle count remains 8; numbering unchanged; the NON-NEGOTIABLE set
+(II, IV, V, VI) is unchanged.
 
-Removed sections: none. Principle count remains 8 and numbering is unchanged, so the
-NON-NEGOTIABLE set (II, IV, V, VI) and all cross-references remain valid.
+Removed sections: none.
 
-Deferral recorded, not silently dropped: Register item 9 now states that idempotency,
-deduplication, and duplicate-execution handling are deferred to a later deliverable, MUST be
-specified before production use, and MUST appear in the deliverables' limitations section.
+Register changes:
+  - Item 9: deferral LIFTED. Ordering remains unspecified and that part of the item stands.
 
-Placeholder resolution: all [ALL_CAPS] tokens replaced. [GUIDANCE_FILE] resolved to
-`CLAUDE.md` (repository root) as the runtime agent guidance file.
-
-Deferred items (tracked in the Assumption and Ambiguity Register, Governance section):
-  - TODO(SOURCE_REQUIREMENTS_GAPS): Greenfield_Requirements.pdf skips sections 4.4, 4.6,
-    4.7, 4.8. Confirm with the requirement owner whether those exist and are in scope.
-  - TODO(MESSAGE_CONTENT_MODEL): Section 4.1 lists no message body/payload field, yet
-    section 4.9 forbids storing "sensitive message content". Resolve in /speckit-specify.
-  - TODO(API_AUTHENTICATION): No authentication/authorization requirement is stated for the
-    submission or status APIs. Prototype default declared here; production posture unconfirmed.
-  - TODO(NFR_TARGETS): No throughput, latency, volume, or retention requirements were given.
-    Numeric defaults in this constitution are assumptions, not customer-confirmed targets.
-  - TODO(TECH_STACK): Language, framework, datastore, and queue are intentionally unbound
-    here and MUST be chosen and justified in /speckit-plan under Principle VIII.
+Deferred items from earlier versions that remain open: TODO(SOURCE_REQUIREMENTS_GAPS),
+TODO(MESSAGE_CONTENT_MODEL) [resolved in feature 001 D1], TODO(API_AUTHENTICATION),
+TODO(NFR_TARGETS), TODO(TECH_STACK) [resolved in feature 001 ADR-001..004].
 -->
 
 # Notification Management Service Constitution
@@ -111,11 +141,15 @@ service acknowledged (req. 4.2). Together these force one governing rule:
   phantom-create work when the process dies between commit and enqueue.
 - Concurrent workers MUST claim work with a lease or row-level lock. Two workers MUST NOT be
   able to attempt the same delivery concurrently; this MUST be proven by a concurrency test.
+- Workers MUST assume at-least-once delivery of work items and MUST be safe to re-run on the
+  same item. A lease can expire and a process can die after a provider call but before the
+  outcome is recorded; the duplicate-execution rule in Principle III is what makes that
+  harmless. *(Restored in v2.1.0; struck in v2.0.0 when idempotency was deferred.)*
 
 *Rationale*: The most common failure of an accept-then-process design is acknowledging work
 that was never durably recorded, which makes the status API lie. This rule closes that gap.
 
-### III. Deterministic Domain Core
+### III. Idempotent, Deterministic Domain Core
 
 - Channel routing (req. 4.3) MUST be implemented as a pure function of its declared inputs:
   requested channels, notification severity, recipient preferences as snapshotted at
@@ -132,8 +166,36 @@ that was never durably recorded, which makes the status API lie. This rule close
 recorded routing decision reproducible during incident analysis. An injected clock is also a
 precondition for testing bounded retry and expiration without real waits (Principle VI).
 
-*Scope note*: Duplicate-submission semantics, deduplication, and provider-call idempotency are
-deliberately NOT governed here; they are deferred to a later deliverable (Register item 9).
+#### Deduplication and duplicate-execution safety *(added in v2.1.0)*
+
+Register item 9 deferred these to a later deliverable and required them to be specified "before any
+production use". That deliverable is feature 002, so the deferral is lifted rather than extended.
+
+- **Duplicate-execution safety.** Every provider call MUST carry a key that is stable across
+  re-attempts of the same logical attempt, so that an at-least-once worker re-attempt cannot
+  produce a duplicate user-visible send. The key MUST be derivable from data the system already
+  holds, so it is identical after a crash that occurred before anything could be recorded.
+- **A deduplication boundary MUST be defined and documented** — what makes two submissions
+  duplicates, over what window, and whether a terminally failed notification resets it. An
+  undocumented boundary is not a strategy; it is behaviour nobody can predict.
+- **Suppression MUST be observable.** A suppressed submission MUST be recorded in audit history and
+  MUST be visible to the caller. A notification that is silently dropped is indistinguishable from
+  one that was lost, which is the failure mode deduplication most easily introduces.
+- **A terminally unsuccessful notification MUST NOT suppress a later submission** of the same key.
+  Suppressing after a permanent failure converts a delivery problem into unrecoverable data loss.
+- **Deduplication MUST be switchable, and MUST be inert when switched off**, with behaviour then
+  identical to the pre-deduplication baseline. This is what makes it a rollout mechanism rather
+  than a one-way door, and it is required because suppression is not reversible: notifications
+  suppressed while it was enabled were never delivered and cannot be recovered afterwards.
+- **Where correctness depends on a caller contract the service cannot enforce**, that dependency
+  MUST be documented and MUST be stated in the migration path before the feature is enabled for
+  any caller. A deduplication key built from caller-supplied identifiers is the motivating case:
+  if the caller reuses one, notifications are silently suppressed and nothing surfaces it.
+
+*Rationale for the addition*: asynchrony plus bounded retry plus at-least-once claiming make
+duplicate execution inevitable, not exceptional. Idempotency is what makes it harmless. The
+observability and switchability rules exist because deduplication's failure mode is silence — a
+notification that never arrives and never errors — which no ordinary test or alert catches.
 
 ### IV. Explicit State Machine and Failure Taxonomy (NON-NEGOTIABLE)
 
@@ -211,7 +273,8 @@ sensitive values, they never contain them.
   - **End-to-end integration test** covering submit → route → persist → queue → attempt →
     transient failure → bounded retry → terminal state → status retrieval → audit history,
     asserting the exact state sequence and the audit trail.
-  - **Adversarial tests**: expired notification, zero eligible channels
+  - **Adversarial tests**: duplicate submission, re-attempt after a provider call succeeded but
+    its outcome was not recorded, expired notification, zero eligible channels
     after routing, all five failure classifications, retry budget exhaustion, worker crash
     between attempt and state write, and concurrent workers on one delivery.
 - Tests MUST be deterministic. Sleeps, real wall-clock waits, real network calls, and reliance
@@ -255,7 +318,8 @@ schedule pressure.
 - Every key decision MUST be recorded as a numbered ADR containing: context, the options
   considered, the decision, the consequences, and the requirement or principle it serves.
   ADRs are required for at minimum: technology stack, state model, routing policy
-  representation, retry parameters, and persistence and queue choice.
+  representation, retry parameters, persistence and queue choice, and the deduplication and
+  idempotency strategy including its boundary, window and caller-contract dependencies.
 - The deliverables required by req. 5 MUST be kept current in the repository and MUST be
   verified at each release gate:
   - a working prototype runnable end-to-end,
@@ -441,10 +505,10 @@ deliverables' limitations section (Principle VIII).
 | 6 | No authentication/authorization requirement for the service's own APIs | TODO(API_AUTHENTICATION): assumed caller authentication is required at the edge. Prototype uses a static bearer token; this is explicitly not a production posture and MUST be listed as a limitation. |
 | 7 | No throughput, latency, volume, or retention targets | TODO(NFR_TARGETS): the Declared Operating Defaults are engineering assumptions, not confirmed targets. |
 | 8 | Scheduling vs expiration precedence unstated | Governing default: expiration wins over every other consideration, including remaining retry budget (Principle IV). |
-| 9 | Ordering, deduplication, and idempotency guarantees unstated | **Deferred to a later deliverable by decision of the project owner (2026-09-07).** This constitution imposes no idempotency obligation. Duplicate-submission semantics, at-least-once duplicate-execution handling, and provider-call deduplication MUST be specified before any production use, and MUST be listed as a limitation in the deliverables (Principle VIII). Assumed for now: no cross-notification ordering guarantee. |
+| 9 | Ordering, deduplication, and idempotency guarantees unstated | **DEFERRAL LIFTED 2026-09-09 (v2.1.0) by decision of the project owner.** Duplicate-submission semantics, at-least-once duplicate-execution handling and provider-call deduplication are now governed by Principle III, and are specified in feature 002 — the later deliverable this item anticipated. **Ordering remains unspecified**: no cross-notification ordering guarantee is made, and that part of this item stands. |
 | 10 | Cancellation/withdrawal, dead-letter replay, rate limiting, multi-tenancy, and delivery receipts are not required by the source document | Explicitly out of scope for this constitution's version. Adding any of them requires a spec change and likely a MINOR amendment. |
 | 11 | Real channel provider integrations | Out of scope for the prototype. Simulated adapters behind the production provider port are used, and this MUST be stated as a limitation (req. 5). |
 | 12 | Technology stack | TODO(TECH_STACK): unbound here by design; chosen and justified in `/speckit-plan` against the Technology Selection constraints. |
 | 13 | Ratification date | No prior adoption date existed; the initial ratification date is the date this document was first filled in. |
 
-**Version**: 2.0.0 | **Ratified**: 2026-09-07 | **Last Amended**: 2026-09-07
+**Version**: 2.1.0 | **Ratified**: 2026-09-07 | **Last Amended**: 2026-09-09

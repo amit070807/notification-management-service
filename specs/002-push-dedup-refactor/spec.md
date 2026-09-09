@@ -4,7 +4,7 @@
 
 **Created**: 2026-09-09
 
-**Status**: Draft — no open clarifications; 1 constitutional amendment required before US3
+**Status**: Draft — no open clarifications; constitutional precondition satisfied (v2.1.0); 1 constitutional amendment required before US3
 (covering both halves of deduplication — see D7)
 
 **Input**: Brownfield scenario covering all three proposed enhancement options, plus the
@@ -137,7 +137,9 @@ suppression is visible in status and audit history.
 and requires a constitutional amendment before any code is written. Sequencing it after the other
 two also means deduplication is designed against the final channel set rather than a subset.
 
-> **⚠ BLOCKED: constitutional amendment required.**
+> **✅ UNBLOCKED — constitution amended to v2.1.0 on 2026-09-09.** The deferral described below is
+> lifted; Principle III now governs both halves and Register item 9 records the lift. The history
+> is retained because it explains why these requirements exist and what they reversed.
 >
 > The source says Option 2 builds "upon the existing idempotency mechanism". **No such mechanism
 > exists** (B-03). Constitution v2.0.0 register item 9 defers idempotency, deduplication and
@@ -155,8 +157,14 @@ two also means deduplication is designed against the final channel set rather th
 > migration plan, owner approval; and (b) revising phase-1 D4 and FR-008b, which the submission
 > half reverses. Neither may be done silently. See G-33.
 >
-> Note that item 9 also says these "MUST be specified before any production use" — so lifting the
-> deferral is the step the constitution anticipated, not a departure from it.
+> Item 9 also said these "MUST be specified before any production use" and deferred them "to a
+> later deliverable" — this feature is that deliverable, so the deferral was honoured on its own
+> terms rather than overridden.
+>
+> **What the amendment obliges beyond this spec**: suppression must be observable, deduplication
+> must be switchable and inert when off, a terminally failed notification must not suppress a
+> resubmission, and caller-contract dependencies must be documented in the migration path before
+> the flag is enabled for any caller. All are already reflected in FR-140 – FR-165.
 
 **Scope (D7)**: deduplication applies at **both** levels, which are distinct mechanisms solving
 distinct problems:
@@ -192,34 +200,47 @@ re-attempt after a successful provider call and confirm no second user-visible s
    recognisable by the provider as the same send.
 6. **[C ← FR-104]** **Given** either half is switched off, **When** submissions and deliveries are
    processed, **Then** behaviour matches the phase-1 baseline exactly.
-7. **[C ← B-03 + amendment]** **Given** the amendment has not been approved, **When**
-   implementation is attempted, **Then** it does not proceed — for either half.
+7. **[C ← constitution v2.1.0]** **Given** the amendment is in force, **When** the delivered
+   `DuplicateSubmissionTest` is re-read, **Then** it is replaced rather than deleted — it encodes
+   the behaviour this story reverses, and deleting it would erase the record of the change.
 
 ---
 
-### User Story 4 - Complete the audit vocabulary (Priority: P4)
+### User Story 4 - Audit trail for retry and failure handling (Priority: P4)
 
-**[E — §4.9 "Retry scheduled **and executed**", "Routing decision made **and channel selected**"]**
+**[E — §4.9 "Record significant actions with proper audit trail", scoped by D11 to retry and
+failure handling]**
 
-Audit history distinguishes a retry being scheduled from a retry being executed, and records the
-channel selection alongside the routing decision.
+An operator reconstructing a failed or retried delivery can see each significant action in order:
+that a retry was scheduled, that it was subsequently executed, and how each attempt failed —
+including failures specific to the newly added channel.
 
-**Why this priority**: A correction, small in scope, and dependent on the other stories having
-produced the actions it records.
+**Why this priority**: Last, because it records actions the other stories produce. Small in scope,
+and the part of §4.9 that this phase actually changes.
 
-**Independent Test**: Run one notification through a retry and confirm both the scheduling and the
-execution of that retry are separately visible in history.
+**Independent Test**: Run one notification through a retryable failure and a successful retry, and
+confirm the scheduling and the execution of that retry are separately visible and correctly
+ordered.
 
 **Acceptance Scenarios**:
 
-1. **[E]** **Given** a retryable failure, **When** history is read, **Then** the retry being
-   scheduled and the retry being executed are both distinguishable.
-2. **[E]** **Given** a routing decision, **When** history is read, **Then** the channels selected
-   are recorded alongside the decision.
-3. **[C ← B-06]** **Given** new event types, **When** the audit completeness test runs, **Then**
+1. **[E ← §4.9 "Retry scheduled and executed"]** **Given** a retryable failure, **When** history is
+   read, **Then** the retry being scheduled and the retry being executed are distinguishable
+   actions, not one inferred from the other.
+2. **[C ← D11]** **Given** a sequence of retries, **When** history is read, **Then** the order of
+   scheduling and execution is unambiguous — a reader can tell which execution followed which
+   scheduling.
+3. **[C ← US1]** **Given** a push delivery that fails on a channel-specific condition, **When**
+   history is read, **Then** the failure is recorded with its classification, subject to the
+   existing minimisation rules.
+4. **[C ← B-06]** **Given** new event types, **When** the audit completeness test runs, **Then**
    every declared type is still reachable in a single run.
-4. **[C ← baseline Principle V]** **Given** any new audit record, **When** the privacy gate runs,
-   **Then** no content, credential or unmasked recipient reference appears.
+5. **[C ← baseline Principle V]** **Given** any new audit record, **When** the privacy gate runs,
+   **Then** no content, credential or unmasked recipient reference appears — including push
+   provider credentials.
+6. **[B-06, already true]** **Given** a routing decision, **When** history is read, **Then** the
+   selected channels are recorded alongside it. *Restated as satisfied; see D11 for why this part
+   of §4.9 needs no work.*
 
 ---
 
@@ -362,12 +383,17 @@ a genuine second send today.*
 
 ### Audit vocabulary (§4.9 correction)
 
-- **FR-150 [E — §4.9]**: Audit history MUST record retry **scheduled and executed** as
-  distinguishable actions. **Whether "executed" differs from the existing attempt record is
-  ambiguous — see G-44.**
-- **FR-151 [E — §4.9]**: Audit history MUST record the routing decision **and the channel
-  selected**. **[B-06]** The existing routing record already carries the selected channels; see
-  G-45 for whether a separate action is intended.
+- **FR-150 [E — §4.9, scoped by D11]**: Audit history MUST record retry **scheduled** and retry
+  **executed** as distinguishable actions. Scheduling is the decision to try again; execution is
+  the retry actually running. An operator MUST NOT have to infer one from the other.
+- **FR-150a [C ← FR-150]**: Where several retries occur, history MUST make it unambiguous which
+  execution followed which scheduling.
+- **FR-150b [C ← FR-150 + US1]**: Failures arising from channel-specific conditions on the new
+  channel MUST be recorded with their classification, subject to the existing minimisation rules.
+- **FR-151 [B-06 — already satisfied]**: Audit history records the routing decision together with
+  the channels selected. The existing routing record carries both, so §4.9's "routing decision made
+  and channel selected" requires no work. Stated so a reader can see it was checked rather than
+  overlooked (D11).
 - **FR-152 [C ← B-06]**: Every declared audit event type MUST remain reachable in a single
   end-to-end run.
 - **FR-153 [C ← baseline Principle V]**: New audit records MUST satisfy the existing privacy gate
@@ -431,8 +457,9 @@ a genuine second send today.*
   demonstrated by forcing that exact interleaving rather than by inspection.
 - **SC-109b [C ← FR-164]**: With deduplication switched off at both levels, the phase-1 suite —
   including the test asserting a second submission is not suppressed — passes unmodified.
-- **SC-110 [E ← §4.9]**: One run including a retry produces distinguishable records for the retry
-  being scheduled and executed, and every declared audit event type remains reachable.
+- **SC-110 [E ← §4.9, scoped by D11]**: One run including a retry produces distinguishable records
+  for the retry being scheduled and for it being executed, with the pairing between them
+  unambiguous, and every declared audit event type remains reachable in a single run.
 - **SC-111 [C ← FR-153]**: The privacy gate passes unchanged, including for push provider
   credentials and any new audit record.
 - **SC-112 [E ← "performance impact is measurable"]**: The performance impact of each enhancement
@@ -452,8 +479,8 @@ remains a candidate for correction and flows into the limitations deliverable.
 
 | ID | Gap | Type | Source requirement that creates it | Status |
 |----|-----|------|------------------------------------|--------|
-| G-33 | **Option 2's premise is false.** It says it builds "upon the existing idempotency mechanism"; no such mechanism exists | **Contradiction between source and system** | Option 2 preamble, against constitution v2.0.0 item 9 and phase-1 D4/FR-008b | **Unresolved and blocking, for BOTH halves (D7).** Register item 9 names duplicate-submission semantics, at-least-once duplicate-execution handling and provider-call deduplication together, so one amendment covers both levels. Also requires revising D4 and FR-008b, which the submission half reverses. |
-| G-54 | If §4.3's wording delta is context rather than requirement (D8), the §4.9 deltas — "retry scheduled **and executed**", "routing decision made **and channel selected**" — sit in the same section and may be too | **Consistency question raised by D8** | "Applicable Functional Requirements" heading, §4.9 | **Unresolved.** US4 currently treats them as corrections. If D8's reasoning is applied consistently, US4 is also out of scope and this phase covers the three options alone. Raised rather than assumed either way. |
+| G-33 | **Option 2's premise was false.** It says it builds "upon the existing idempotency mechanism"; no such mechanism exists | **Contradiction between source and system** | Option 2 preamble, against constitution v2.0.0 item 9 and phase-1 D4/FR-008b | **RESOLVED 2026-09-09: constitution amended to v2.1.0.** Register item 9 names duplicate-submission semantics, at-least-once duplicate-execution handling and provider-call deduplication together, so one amendment covers both levels. Also requires revising D4 and FR-008b, which the submission half reverses. |
+| G-54 | If §4.3's wording delta is context rather than requirement (D8), the §4.9 deltas sit in the same section and may be too | **Consistency question raised by D8** | "Applicable Functional Requirements" heading, §4.9 | **RESOLVED 2026-09-09 (D11): §4.9 applies, scoped to retry and failure handling.** The sections differ in kind: §4.3 offers "factors such as" and no option names priority; §4.9 issues a directive about what must be recorded, and retry and failure handling is what this phase changes. |
 | G-57 | With graceful degradation out of scope (D10) and the provider abstraction already delivered (G-50), Option 3's remaining new work is narrow: per-provider error-code mapping and per-provider retry strategies | **Scope observation, not a gap in the source** | Option 3 after D10 | **Recorded.** Both remaining items are needed by Option 1 regardless — push introduces the first genuinely different provider error vocabulary. Option 3 may therefore be largely satisfied as a by-product of Option 1 rather than as separate work. Worth confirming before planning. |
 | G-53 | The delivered worker can double-send: a lease expiring between a successful provider call and the state write causes a re-attempt with no provider-side key to recognise it | **Defect in the existing system**, not a gap in the source | Discovered from B-13 while scoping Option 2's second half | **Unresolved until the amendment lands.** Addressed by FR-160–FR-165. Worth noting it is invisible in normal operation and appears only under lease expiry or process death — exactly the conditions least likely to be exercised before production. |
 | G-34 | The document presents three options as alternatives ("Proposed Enhancement Options") | Ambiguous scope | Enhancement Options section | **RESOLVED 2026-09-09 (D6).** The project owner directed that all three be covered. |
@@ -468,8 +495,8 @@ remains a candidate for correction and flows into the limitations deliverable.
 | G-56 | Enabling deduplication changes the meaning of an existing field for existing callers, who were never told it must be unique | **Backward-compatibility risk** | Created by D9, against phase-1 FR-002/FR-048 and the published contract | **Unresolved.** FR-103's migration path MUST require callers to audit identifier usage before the flag is enabled; FR-104's flag is what makes that audit possible before any suppression occurs. |
 | G-42 | The boundary and retention policy "must be documented" — an obligation on the deliverable, not a behaviour | Explicit obligation | Option 2 | **Tracked** as FR-142; satisfied only when G-41 is answered. |
 | G-43 | "Reprocessing a queued delivery must not create uncontrolled duplicate side effects" — "uncontrolled" is undefined, implying some duplication is controlled and acceptable | Ambiguous | Option 2 | **Assumed**: a duplicate provider call is acceptable if it cannot produce a second user-visible notification; the phrase is read as at-least-once processing with at-most-once visible effect. |
-| G-44 | §4.9 names "retry scheduled **and executed**". Whether "executed" is distinct from the existing delivery-attempted record is unclear | Ambiguous | §4.9, brownfield text, against B-06 | **Assumed** distinct: "scheduled" is the decision, "executed" is the retry actually running, which the existing attempt record covers only implicitly. |
-| G-45 | §4.9 names "routing decision made **and channel selected**". The existing routing record already carries selected channels | Ambiguous | §4.9, brownfield text, against B-06 | **Assumed** to be one action, already satisfied. If a separate per-channel action is intended, the event count changes. |
+| G-44 | §4.9 names "retry scheduled **and executed**". Whether "executed" is distinct from the existing delivery-attempted record is unclear | Ambiguous | §4.9, brownfield text, against B-06 | **RESOLVED 2026-09-09 (D11): distinct.** Scheduling is the decision to try again; execution is the retry running. Both records exist today, but nothing ties an execution to the scheduling that caused it — FR-150a closes that. |
+| G-45 | §4.9 names "routing decision made **and channel selected**". The existing routing record already carries selected channels | Ambiguous | §4.9, brownfield text, against B-06 | **RESOLVED 2026-09-09 (D11): one action, already satisfied.** FR-151 records it as met rather than dropping it, so a reviewer can see the clause was checked against the baseline. No work. |
 | G-46 | Backward compatibility must be "maintained **or** migration path documented" — which applies is not stated per change, and no consumer inventory exists | Ambiguous | Success Criteria | **Unresolved, per-change.** Adding `PUSH` to a **closed** contract enum (B-12) is the concrete instance: additive for tolerant consumers, breaking for strict ones. |
 | G-47 | "Graceful degradation for provider failures" is undefined, and the obvious reading conflicts with an existing guarantee | **Potential contradiction** | Option 3 key considerations, against phase-1 FR-035 | **RESOLVED 2026-09-09 (D10): out of scope.** The Applicable Functional Requirements name §4.5 — bounded retry across five classifications — as this system's failure handling, and that is delivered. Resilience (circuit breaking, load shedding, channel fallback) is a separate concern the requirements do not ask for. The FR-035 conflict is therefore avoided rather than resolved. |
 | G-48 | Rollback procedures are required, but rollback is not symmetric with rollout for deduplication: notifications suppressed while it was on were never delivered and cannot be recovered | **Missing, with a real consequence** | Phase 3, "document migration paths and rollback procedures" | **Assumed**: rollback restores behaviour going forward only. This MUST be stated in the rollback procedure rather than discovered. |
@@ -600,6 +627,32 @@ outage lasting beyond the retry window will exhaust the deliveries in flight aga
 deliveries are terminal — dead-letter replay is out of scope by constitution register item 10.
 This is a known and accepted consequence, and belongs in the limitations deliverable.
 
+#### D11: §4.9 applies, scoped to retry and failure handling — **decided 2026-09-09 by the project owner** *(closes G-44, G-45, G-54)*
+
+**The question (G-54)**: D8 removed the priority story because §4.3's wording delta sat inside a
+"factors such as" list in a section supplying context. §4.9's deltas sit in the same section, so
+consistency demanded asking whether they survive the same scrutiny.
+
+**Decision**: they do. §4.9 opens with a directive — *"Record significant actions with proper audit
+trail"* — not an illustrative list, and the obligation is scoped to **retry and failure handling**,
+which is what §4.5 covers and what this phase changes.
+
+**Why this is not inconsistent with D8**: the two sections differ in kind, not only in wording.
+§4.3 offers "factors **such as**", explicitly illustrative, and no enhancement option names
+priority. §4.9 issues an instruction about what must be recorded, and retry and failure handling is
+squarely within what the phase touches — push introduces new failure conditions, and deduplication
+introduces suppression as a recordable action.
+
+**Consequences**:
+
+- "Retry **scheduled and executed**" is in scope and becomes FR-150/150a/150b. The distinction is
+  real: today the scheduling decision and the attempt that follows it are separate records, but
+  nothing ties an execution to the scheduling that caused it (G-44 confirmed).
+- "Routing decision made **and channel selected**" needs **no work**. The existing routing record
+  already carries the selected channels (B-06), so FR-151 is marked satisfied rather than dropped —
+  a reader can see it was checked, not overlooked (G-45 confirmed).
+- Audit for push-specific failure conditions falls in scope through the same clause (FR-150b).
+
 ### Open Questions
 
 **None.** All four questions raised during drafting are resolved: D6 (scope),
@@ -645,8 +698,9 @@ into the limitations deliverable if unconfirmed at implementation time.
 
 ## Dependencies
 
-- **[E ← Option 2]** A constitutional amendment lifting the idempotency deferral is a prerequisite
-  for US3. It is a governance action, not an implementation task, and blocks that story alone.
+- **[E ← Option 2]** A constitutional amendment lifting the idempotency deferral was a
+  prerequisite for US3. **Satisfied**: constitution v2.1.0, 2026-09-09, with the amendment record
+  and migration plan in that document's sync impact report.
 - **[E ← Option 1]** A push provider must be reachable for a real delivery to succeed. Under G-22
   it is simulated, so nothing here proves interoperability.
 - **[A ← G-49]** Push delivery needs a device token that no source document supplies. The
