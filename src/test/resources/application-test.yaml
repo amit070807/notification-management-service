@@ -1,4 +1,13 @@
 spring:
+  # Every distinct @TestPropertySource combination is a separate Spring context, and Spring's test
+  # context cache keeps them all alive for the run. At Hikari's default of 10 connections each, the
+  # suite's contexts exhaust PostgreSQL's default max_connections of 100 and later classes fail with
+  # "sorry, too many clients already" — a failure that looks like a defect in whichever class happens
+  # to load last. Capping the pool fixes the cause; raising the server's limit would only move the
+  # ceiling. Four is enough for the most concurrent test (two worker threads plus margin).
+  datasource:
+    hikari:
+      maximum-pool-size: 4
   flyway:
     enabled: true
   task:

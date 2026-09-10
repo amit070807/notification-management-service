@@ -18,15 +18,24 @@ phase-1 baseline.
 ./gradlew test          # phase-1 suite, unmodified, against the flagged-off build
 ```
 
-Expect **all 196 phase-1 tests to pass unchanged**. Any modification to an existing test must be
-individually justified against a requirement in spec 002 that explicitly changes that behaviour.
+Every phase-1 test must still pass, and any modification to an existing test must be individually
+justified against a requirement in spec 002 that explicitly changes that behaviour.
 
 This runs first because it is the claim most easily broken and least likely to be noticed: an
 enhancement that quietly alters existing behaviour looks fine in its own tests.
 
-One phase-1 test **is** expected to change, and only one: `DuplicateSubmissionTest` asserts a second
-submission is *not* suppressed. It encodes the behaviour US3 reverses. It must be **replaced, not
-deleted** — deleting it would erase the record that behaviour changed (spec US3 scenario 8).
+**This scenario predicted that exactly one phase-1 test would change. That prediction was wrong, and
+the way it was wrong is worth recording.** Seven of thirty-seven phase-1 test classes changed. The
+prediction counted only tests whose *behaviour* this phase reverses, and there is indeed only one of
+those (`DuplicateSubmissionTest`). It overlooked the tests phase 1 built as **parity gates** over closed
+sets — the sealed audit payload allowlist, the channel enum, the delivery transition table. Those gates
+are designed to fail the moment their set grows. Failing here is them working, not them breaking.
+
+The full justification per class is in the validation record at the end of this document. The distinction
+that matters: a parity gate updated to a larger closed set still asserts the same rule, whereas a
+behavioural test rewritten to match new behaviour asserts something different. Only one test in this
+phase is in the second category, and it was **replaced, not deleted** — deleting it would erase the
+record that behaviour changed (spec US3 scenario 8).
 
 ## Scenario 1 — push delivers end to end
 
@@ -165,6 +174,44 @@ requirement.
 ```
 
 Coverage floors are unchanged and must not fall (FR-108).
+
+## Validation record
+
+Executed `2026-09-10` at commit `a9e305e` plus the phase-7 deliverables, against `postgres:16-alpine`
+with migrations `V1`–`V6` applied. Scenario 0 first, as required.
+
+| Scenario | Executed by | Result |
+|---|---|---|
+| 0 — regression, flags off | `./gradlew clean test` (full suite) | **PASS** — 308 tests, 0 failures |
+| 1 — push delivers end to end | `PushDeliveryTest` | PASS |
+| 2 — push inert when disabled | `PushDisabledTest` | PASS |
+| 3 — existing channels untouched | `ExistingChannelsUnchangedTest` | PASS |
+| 4 — architecture claim tested | `./gradlew archTest` | PASS |
+| 5 — stranded delivery reclaimed | `StrandedDeliveryReclaimTest`, `ReclaimBudgetTest`, `ReclaimExpiryPrecedenceTest` | PASS |
+| 6 — re-attempt carries the same key | `IdempotencyKeyStabilityTest` | PASS |
+| 7 — duplicate suppressed and visible | `DuplicateSuppressionTest` | PASS |
+| 8 — failed original does not suppress | `DuplicateSuppressionTest.aTerminallyFailedOriginalDoesNotSuppressARetrySubmission` | PASS |
+| 9 — deduplication inert when off | `DedupDisabledTest`, `DuplicateSubmissionTest` | PASS |
+| 10 — scheduling and execution distinguishable | `RetryAuditTest`, `RetryPairingTest` | PASS |
+| 11 — nothing sensitive leaks | `./gradlew privacyTest` | PASS |
+| 12 — performance measured | `./gradlew perfTest` → [performance-phase2.md](../../docs/performance-phase2.md) | PASS — measured, no threshold asserted |
+
+`./gradlew clean check archTest privacyTest` passes. Coverage floors unchanged and met (FR-108).
+
+### Phase-1 test classes modified, and why
+
+Seven of thirty-seven. Six are parity gates over a closed set that grew; one is the behavioural reversal
+this phase was always going to cause.
+
+| Class | Change | Justification |
+|---|---|---|
+| `AuditPayloadAllowlistTest` | Permitted-subclass count 10 → 13 | Parity gate. The sealed allowlist grew by `NOTIFICATION_SUPPRESSED`, `RETRY_EXECUTED`, `DELIVERY_RECLAIMED`. The rule it asserts — that the set is sealed and no member carries content — is unchanged |
+| `DeliveryStateTransitionTest` | `IN_PROGRESS → QUEUED` added to the parameterised table | Parity gate. FR-159 requires the transition, and Principle IV requires it *declared* rather than tolerated. Every illegal transition is still asserted illegal |
+| `ChannelExtensibilityTest` | +2 methods | US2/FR-120. Asserts a new provider needs only a provider call and an error-code map, and that the base is abstract. This is the refactoring requirement in executable form |
+| `AuditCompletenessTest` | +1 method; existing method extended to 13 types and scoped | FR-152 (every declared type reachable) and FR-151 (the routing decision is *already* recorded, asserted rather than reimplemented). The scoping fixed a defect: a global query would have passed on rows another class left in the shared container |
+| `NoSensitiveDataLeakTest` | +2 methods; both flags and the push credential enabled | FR-153. Extends the marker scan to the three new record types and the push credential. One of the two new methods exists solely to prove the scan is not vacuous |
+| `PostgresIntegrationTest` | Parks leftover due deliveries per test | No requirement — a test-isolation defect fix. The worker claims a bounded batch oldest-first, so an accumulating suite starves its own newest delivery. Fixes coupling between unrelated tests; changes no assertion |
+| `DuplicateSubmissionTest` | Flag pinned off; premise and stale constitution reference rewritten | **The only behavioural change.** US3 reverses what it asserted, so it now states which flag state its claim belongs to. Kept because FR-105 makes phase-1 behaviour a live requirement, not history — with the flag off, the behaviour must still be exactly this |
 
 ## Limitations this phase adds to DO-004
 

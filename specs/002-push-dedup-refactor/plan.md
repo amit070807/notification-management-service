@@ -201,7 +201,7 @@ Order is load-bearing, not arbitrary:
 | ~~U-6~~ | ~~Deduplication window duration~~ | **RESOLVED (spec D14)**: 24 hours, configurable, recorded as an assumption. No constitutional amendment — Principle III requires the window to be defined and documented, not to hold a particular value |  — |
 | ~~U-7~~ | ~~G-55 mitigation~~ | **RESOLVED (spec D13)**: every suppression is reported in the submission response. The risk was silence, not the choice of mitigation | — |
 | ~~U-8~~ | ~~Suppression response shape~~ | **RESOLVED (spec D13)**: `200 OK` with a suppression body. `202` would misreport — nothing was accepted for processing | — |
-| **U-9** | Whether US2 remains a separate story or folds into US1 (G-57) | Depends on how much divergence push actually introduces — knowable after US1, not before | Start of US2 |
+| ~~U-9~~ | ~~Whether US2 remains a separate story~~ | **RESOLVED (ADR-022)**: real work. Push duplicated ~19 shared concerns across two adapters and added a channel branch to wiring. Scoped to base extraction, removing the branch, and per-channel retry | — |
 
 ## Phase Outputs
 

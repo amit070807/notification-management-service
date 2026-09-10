@@ -74,9 +74,11 @@ tasks.withType<Test> {
     }
     // docker-java negotiates Docker API 1.32 by default, which Engine 25+ rejects outright
     // ("client version 1.32 is too old. Minimum supported API version is 1.40"). It reads the
-    // system property `api.version`, not the DOCKER_API_VERSION env var. 1.43 is accepted by
-    // every Engine from 24 onward, including the GitHub-hosted runners.
-    systemProperty("api.version", System.getenv("DOCKER_API_VERSION") ?: "1.43")
+    // system property `api.version`, not the DOCKER_API_VERSION env var.
+    //
+    // 1.44 rather than 1.43: Engine 29 raised its minimum to 1.44, so a 1.43 pin fails outright there.
+    // 1.44 shipped with Engine 25, so this is a wider window than 1.43 was, not a newer-only one.
+    systemProperty("api.version", System.getenv("DOCKER_API_VERSION") ?: "1.44")
     // Principle VI: tests are deterministic. Fail fast on the ordering assumptions
     // that make a suite flaky.
     systemProperty("junit.jupiter.execution.order.random.seed", "1")
@@ -129,6 +131,37 @@ tasks.register<Test>("archTest") {
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
     filter { includeTestsMatching("com.notification.architecture.*") }
+}
+
+// T068. A timing measurement is not a gate: it measures the machine as much as the code, so putting it
+// in `test` would make the suite fail for reasons unrelated to correctness, which Principle VI forbids.
+// Excluded from `test` and run on demand; its output feeds docs/performance-phase2.md.
+tasks.test {
+    filter { excludeTestsMatching("com.notification.performance.*") }
+}
+
+tasks.register<Test>("perfTest") {
+    description = "Measures the cost of each phase-2 enhancement. Asserts nothing (FR-107, G-40)."
+    group = "verification"
+    useJUnitPlatform()
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    filter { includeTestsMatching("com.notification.performance.*") }
+    testLogging { showStandardStreams = true }
+}
+
+// Principle V gate, as its own task for the same reason archTest is one — and for a second reason
+// that already cost a CI run: `./gradlew test --tests 'com.notification.privacy.*'` writes
+// build/jacoco/test.exec from that subset alone, so the coverage gate then measured the subset and
+// failed on packages the full suite covers. A separate Test task writes its own exec file and cannot
+// clobber the full-suite data.
+tasks.register<Test>("privacyTest") {
+    description = "Runs the sensitive-data scan (Principle V gate)."
+    group = "verification"
+    useJUnitPlatform()
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    filter { includeTestsMatching("com.notification.privacy.*") }
 }
 
 // U-2 (ADR-011): CI invokes this same aggregate, so every gate is reproducible

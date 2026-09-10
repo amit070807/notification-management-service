@@ -44,7 +44,7 @@ jobs:
       # at a glance in the CI log rather than buried among 180+ test results. Blocking:
       # the constitution names this a merge blocker.
       - name: Privacy gate (no content, credentials or unmasked recipients in audit or logs)
-        run: ./gradlew test --tests 'com.notification.privacy.*' --no-daemon
+        run: ./gradlew privacyTest --no-daemon
 
       # Gate 9: coverage floors — 90% domain, 80% overall
       - name: Coverage floors
@@ -60,13 +60,21 @@ jobs:
       # A new high or critical advisory blocks the merge.
       - name: Dependency audit
         uses: dependency-check/Dependency-Check_Action@main
+        env:
+          # This action runs in a Docker container, but inherits JAVA_HOME from the job, where
+          # setup-java pointed it at a host path under /opt/hostedtoolcache. That path does not exist
+          # inside the container, so dependency-check aborted with "JAVA_HOME is not defined
+          # correctly" before scanning anything. Clearing it lets the container use its own bundled
+          # JDK. The failure looked like a vulnerability finding and was an environment fault.
+          JAVA_HOME: ""
         with:
           project: notification-management-service
           path: "."
           format: "HTML"
-          args: >
-            --failOnCVSS 7
-            --enableExperimental
+          # One line, not a folded scalar. `>` produced a single argument with an embedded space and
+          # a trailing newline — "--failOnCVSS 7 --enableExperimental\n" — rather than three
+          # arguments, so the CVSS threshold would not have been applied even once Java was found.
+          args: "--failOnCVSS 7 --enableExperimental"
 
       # Gate 12: OpenAPI breaking-change diff against the base branch
       - name: OpenAPI breaking-change diff
