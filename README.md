@@ -22,8 +22,10 @@ Java 21 · Spring Boot · Gradle · PostgreSQL 16
 | Docker | Engine 25+ | PostgreSQL, and Testcontainers for integration tests. The build negotiates API 1.44, which Engine 25 and later accept |
 | Gradle | none needed | Use the committed wrapper (`./gradlew`) |
 
-No credentials are required. All channel providers are simulated, push included; the repository contains
-no real secrets, only `.env.example`.
+No **real** provider credentials are required: every channel provider is simulated, push included, and the
+repository holds no secrets, only `.env.example`. Push is the one channel that still needs a credential
+*value* to be present — any string will do, because nothing authenticates it — since a missing one is
+reported as `AUTH_ERROR` by design (FR-115), and nothing refuses it at startup.
 
 ## Run it
 
@@ -92,7 +94,7 @@ two sources of truth for one question (ADR-017).
 channels:
   PUSH:
     enabled: true
-    minimum-severity: MEDIUM
+    minimumSeverity: MEDIUM   # camelCase: RoutingPolicyLoader reads raw YAML, not relaxed-bound
 ```
 
 Push credentials are configuration, and never reach a response, a log or a metric label:
@@ -102,9 +104,13 @@ notification:
   channel:
     credentials:
       PUSH:
-        token: ${PUSH_TOKEN}
+        token: ${PUSH_TOKEN:local-dev-token}   # any value; the simulated provider authenticates nothing
         token-ref: env:PUSH_TOKEN
 ```
+
+Without a `token` value every push attempt is a terminal `AUTH_ERROR` — the delivery reaches `FAILED` on
+attempt one with no retries, because a credential missing now will still be missing in thirty seconds
+(FR-115). The default above keeps a local run working; drop it to see that failure path deliberately.
 
 Push also takes its own retry schedule, because a provider may differ in how patiently it backs off —
 but **no channel may opt out of being bounded**. An override above `MAX_ALLOWED_ATTEMPTS` throws at
