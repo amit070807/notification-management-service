@@ -75,6 +75,15 @@ notification:
 
   worker:
     poll-interval-ms: 1000
+    # T048 (feature 002 G-58). MUST stay ABOVE notification.channel.read-timeout.
+    #
+    # Reclaiming IN_PROGRESS deliveries (FR-159) means a delivery whose provider call is merely SLOW —
+    # longer than this lease — can be reclaimed while still in flight. That trades a silent stall for
+    # a duplicate call, which the idempotency key makes recognisable but does not make free.
+    #
+    # 60s against a 10s read timeout leaves a wide margin. Lowering this below the read timeout would
+    # make reclaim race every slow call rather than only crashed ones.
+    delivery-lease: PT60S
   channel:
     connect-timeout: PT5S
     read-timeout: PT10S

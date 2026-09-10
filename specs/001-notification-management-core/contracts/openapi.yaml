@@ -30,9 +30,14 @@ paths:
     post:
       summary: Submit a notification for asynchronous processing
       description: |
-        Accepts or rejects the submission. Acceptance means the notification and its
-        deliveries are durably recorded and retrievable (FR-015); it does NOT report a
+        Accepts, suppresses, or rejects the submission. Acceptance means the notification and
+        its deliveries are durably recorded and retrievable (FR-015); it does NOT report a
         delivery outcome, because no delivery has been attempted (FR-029).
+
+        A submission repeating a (sourceSystem, correlationId) pair already seen inside the
+        deduplication window is SUPPRESSED and returns 200, not 202 (FR-144). The status code
+        carries that distinction on purpose: a caller that ignores unfamiliar response fields
+        must still be able to tell that no delivery was created.
       operationId: submitNotification
       requestBody:
         required: true
@@ -51,6 +56,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SubmissionAccepted'
+        '200':
+          description: |
+            Suppressed as a duplicate (FR-144). No delivery was created and no new notification
+            exists. Distinguishable from 202 by status code alone, without parsing the body
+            (FR-144a). No Location header, because there is no new resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionSuppressed'
         '400':
           description: Rejected. Every offending field is named (FR-004).
           content:
@@ -259,6 +273,26 @@ components:
         state:
           $ref: '#/components/schemas/NotificationState'
         receivedAt: { type: string, format: date-time }
+
+    SubmissionSuppressed:
+      type: object
+      description: |
+        The body of a suppressed submission (FR-144). Carries no `id`, because no notification
+        was created — `originalNotificationId` names the one that already exists, so a caller
+        that has reused an event identifier can find what it collided with.
+      required: [suppressed, originalNotificationId, clientNotificationId, suppressedAt]
+      properties:
+        suppressed:
+          type: boolean
+          description: Always true. Redundant with the 200 status; present for explicitness.
+        originalNotificationId:
+          type: string
+          format: uuid
+          description: The notification whose existence caused the suppression.
+        clientNotificationId:
+          type: string
+          description: Echoed back from the suppressed submission.
+        suppressedAt: { type: string, format: date-time }
 
     DeliveryStatus:
       type: object

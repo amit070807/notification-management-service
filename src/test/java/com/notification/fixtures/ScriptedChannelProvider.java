@@ -2,6 +2,7 @@ package com.notification.fixtures;
 
 import com.notification.domain.model.Channel;
 import com.notification.domain.model.ContentRef;
+import com.notification.domain.model.IdempotencyKey;
 import com.notification.domain.model.RecipientRef;
 import com.notification.domain.port.ChannelProviderPort;
 import com.notification.domain.port.DeliveryOutcome;
@@ -36,11 +37,24 @@ public final class ScriptedChannelProvider implements ChannelProviderPort {
         return channel;
     }
 
+    /**
+     * Records the key of every call, so a test can assert that a re-attempt of the same logical
+     * attempt repeats it (feature 002 FR-161). A scripted provider is the only place that can observe
+     * this: a real provider's recognition of the key is its own business (spec D12, G-59).
+     */
+    private final List<IdempotencyKey> keys = new CopyOnWriteArrayList<>();
+
     @Override
-    public DeliveryOutcome send(RecipientRef recipient, ContentRef content) {
+    public DeliveryOutcome send(RecipientRef recipient, ContentRef content, IdempotencyKey key) {
         calls.add(recipient);
+        keys.add(key);
         DeliveryOutcome next = script.poll();
         return next == null ? fallback : next;
+    }
+
+    /** Keys seen, in call order. */
+    public List<IdempotencyKey> keysSeen() {
+        return List.copyOf(keys);
     }
 
     public ScriptedChannelProvider thenSucceed() {
@@ -76,6 +90,7 @@ public final class ScriptedChannelProvider implements ChannelProviderPort {
     public void reset() {
         script.clear();
         calls.clear();
+        keys.clear();
         fallback = DeliveryOutcome.succeeded();
     }
 }

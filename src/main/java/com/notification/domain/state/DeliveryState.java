@@ -41,7 +41,10 @@ public enum DeliveryState {
     static {
         PENDING.allowed = EnumSet.of(QUEUED, UNDELIVERABLE, EXPIRED);
         QUEUED.allowed = EnumSet.of(IN_PROGRESS, EXPIRED);
-        IN_PROGRESS.allowed = EnumSet.of(DELIVERED, RETRY_SCHEDULED, FAILED, EXHAUSTED, EXPIRED);
+        // QUEUED is reachable from IN_PROGRESS for reclaim (feature 002 FR-159): a worker or
+        // provider that stopped mid-attempt leaves the row here, and without this transition it is
+        // stranded forever — never terminal, and reported IN_PROGRESS indefinitely by the rollup.
+        IN_PROGRESS.allowed = EnumSet.of(DELIVERED, RETRY_SCHEDULED, FAILED, EXHAUSTED, EXPIRED, QUEUED);
         RETRY_SCHEDULED.allowed = EnumSet.of(IN_PROGRESS, EXPIRED);
         // Terminal states keep the empty set.
     }

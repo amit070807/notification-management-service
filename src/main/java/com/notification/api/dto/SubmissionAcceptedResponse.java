@@ -14,4 +14,4 @@ import java.util.UUID;
  * here may suggest otherwise (FR-029).
  */
 public record SubmissionAcceptedResponse(
-        UUID id, String clientNotificationId, NotificationState state, Instant receivedAt) {}
+        UUID id, String clientNotificationId, NotificationState state, Instant receivedAt) implements SubmissionResponse {}

@@ -4,6 +4,7 @@ import com.notification.audit.AuditRecorder;
 import com.notification.audit.Masking;
 import com.notification.audit.payload.AuditPayload;
 import com.notification.domain.model.*;
+import com.notification.domain.model.IdempotencyKey;
 import com.notification.domain.port.*;
 import com.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.notification.domain.retry.FailureClassification;
@@ -78,6 +79,20 @@ public class DeliveryProcessingService {
         }
         Notification notification = maybe.get();
 
+        // T049/FR-159 — a reclaimed delivery arrives still marked IN_PROGRESS, because claimDue takes
+        // the lease without changing state. It must return to QUEUED before anything else: the state
+        // machine legitimately rejects IN_PROGRESS -> IN_PROGRESS, and silently tolerating that would
+        // be exactly the kind of exception path Principle IV forbids.
+        //
+        // Deliberately BEFORE the expiry check, so the reclaim is recorded even when the delivery is
+        // then expired. Otherwise a stranded-then-expired delivery would reach EXPIRED with no
+        // record that it had ever been stuck, which is the case an operator most needs to see.
+        Delivery current = delivery;
+        if (delivery.state() == DeliveryState.IN_PROGRESS) {
+            current = reclaim(delivery, notification, now);
+        }
+        delivery = current;
+
         // T078 — the eligibility check runs immediately before EVERY attempt, not only when the
         // notification is first processed. A delivery can cross either boundary while waiting in
         // backoff, so evaluating once would violate FR-032.
@@ -120,20 +135,50 @@ public class DeliveryProcessingService {
                         delivery.channel().name(),
                         attemptNumber));
 
-        UUID attemptId = ids.newId();
-        jdbc.sql(
-                        "INSERT INTO delivery_attempt (id, delivery_id, attempt_number, started_at, outcome) "
-                                + "VALUES (?, ?, ?, ?, 'PENDING')")
-                .param(attemptId)
-                .param(delivery.id())
-                .param(attemptNumber)
-                .param(Timestamp.from(now))
-                .update();
+        // A reclaimed re-attempt reuses its attempt number — that is exactly what keeps the idempotency
+        // key stable across the crash (FR-161) — and uq_attempt_number forbids a second row for it. So
+        // the row is upserted: this is the same logical attempt executed again, not a new one. Handing
+        // it a fresh number to satisfy the constraint would change the key and defeat the provider-side
+        // deduplication the reclaim exists to make safe.
+        //
+        // The stranded row's PENDING outcome and stale start time are overwritten. That the attempt ran
+        // twice is not lost — DELIVERY_RECLAIMED records it, and is the only place that says why.
+        //
+        // The id is taken from RETURNING rather than the generated one: on conflict the existing row
+        // keeps its own id, so using the generated value would leave the outcome update below matching
+        // nothing and the attempt would stay PENDING forever.
+        UUID attemptId =
+                jdbc.sql(
+                                """
+                                INSERT INTO delivery_attempt
+                                    (id, delivery_id, attempt_number, started_at, outcome)
+                                VALUES (?, ?, ?, ?, 'PENDING')
+                                ON CONFLICT (delivery_id, attempt_number) DO UPDATE
+                                   SET started_at = EXCLUDED.started_at,
+                                       outcome = 'PENDING',
+                                       finished_at = NULL,
+                                       failure_classification = NULL,
+                                       diagnostic = NULL
+                                RETURNING id
+                                """)
+                        .param(ids.newId())
+                        .param(delivery.id())
+                        .param(attemptNumber)
+                        .param(Timestamp.from(now))
+                        .query(UUID.class)
+                        .single();
 
         DeliveryOutcome outcome =
                 providers
                         .get(delivery.channel())
                         .send(delivery.recipientRef(), notification.content());
+        // T044/FR-161. Derived here, immediately before the call, from data already written: the
+        // delivery row at acceptance and the attempt row just above. That is what makes it
+        // reproducible after a crash between this call and the outcome write — the exact window the
+        // key exists to survive (ADR-019).
+        IdempotencyKey key =
+                IdempotencyKey.of(
+                        delivery.notificationId(), delivery.recipientId(), delivery.channel(), attemptNumber);
 
         Instant finished = clock.now();
         jdbc.sql(
@@ -268,6 +313,40 @@ public class DeliveryProcessingService {
                         nextAttempt,
                         classification,
                         now));
+    }
+
+    /**
+     * Returns a delivery stranded mid-attempt to QUEUED (FR-159).
+     *
+     * <p>The attempt count is <b>not</b> reset (FR-159a). A reclaim consumes nothing but neither does
+     * it refund: a provider that crashes the worker on every call would otherwise produce unbounded
+     * attempts while each individual reclaim looked reasonable.
+     */
+    private Delivery reclaim(Delivery delivery, Notification notification, Instant now) {
+        Delivery queued =
+                transition(delivery, DeliveryState.QUEUED, now, delivery.lastFailureClassification(),
+                        delivery.attemptCount());
+
+        audit.record(
+                notification.id(),
+                notification.correlationId(),
+                AuditEventType.DELIVERY_RECLAIMED,
+                new AuditPayload.DeliveryReclaimed(
+                        delivery.id().toString(),
+                        delivery.channel().name(),
+                        delivery.attemptCount(),
+                        now.toString()));
+
+        log.warn(
+                "Reclaimed delivery {} on channel {} after {} attempt(s): its lease expired while"
+                        + " IN_PROGRESS, meaning the worker or provider stopped mid-attempt. The"
+                        + " provider may already have processed that call; the idempotency key is what"
+                        + " makes the repeat recognisable to it (FR-161).",
+                delivery.id(),
+                delivery.channel(),
+                delivery.attemptCount());
+
+        return queued;
     }
 
     private void expire(Delivery delivery, Notification notification, Instant now) {

@@ -4,6 +4,9 @@ import com.notification.audit.AuditRecorder;
 import com.notification.audit.Masking;
 import com.notification.audit.payload.AuditPayload;
 import com.notification.domain.model.*;
+import com.notification.domain.dedup.DeduplicationKey;
+import com.notification.domain.dedup.DeduplicationDecision;
+import com.notification.config.FeatureFlags;
 import com.notification.domain.port.ClockPort;
 import com.notification.domain.port.IdPort;
 import com.notification.domain.port.OutboxRepositoryPort;
@@ -45,6 +48,9 @@ public class SubmissionService {
     private final ClockPort clock;
     private final IdPort ids;
     private final RoutingPolicy policy;
+    private final FeatureFlags flags;
+    private final com.notification.persistence.JdbcDeduplicationRepository deduplication;
+    private final java.time.Duration dedupWindow;
 
     public SubmissionService(
             JdbcNotificationRepository notifications,
@@ -53,7 +59,11 @@ public class SubmissionService {
             AuditRecorder audit,
             ClockPort clock,
             IdPort ids,
-            RoutingPolicy policy) {
+            RoutingPolicy policy,
+            FeatureFlags flags,
+            com.notification.persistence.JdbcDeduplicationRepository deduplication,
+            @org.springframework.beans.factory.annotation.Value("${notification.dedup.window:PT24H}")
+                    java.time.Duration dedupWindow) {
         this.notifications = notifications;
         this.deliveries = deliveries;
         this.outbox = outbox;
@@ -61,9 +71,26 @@ public class SubmissionService {
         this.clock = clock;
         this.ids = ids;
         this.policy = policy;
+        this.flags = flags;
+        this.deduplication = deduplication;
+        this.dedupWindow = dedupWindow;
     }
 
-    public record Accepted(UUID id, String clientNotificationId, NotificationState state, Instant receivedAt) {}
+    /**
+     * The outcome of a submission: accepted for processing, or suppressed as a duplicate.
+     *
+     * <p>A sealed pair rather than a nullable field on {@code Accepted}, so a caller cannot forget to
+     * check. The controller must decide between 202 and 200 (ADR-021), and a boolean it could ignore
+     * would reintroduce exactly the silent failure D13 removes.
+     */
+    public sealed interface Outcome permits Outcome.Accepted, Outcome.Suppressed {
+
+        record Accepted(UUID id, String clientNotificationId, NotificationState state, Instant receivedAt)
+                implements Outcome {}
+
+        record Suppressed(UUID originalNotificationId, String clientNotificationId, Instant suppressedAt)
+                implements Outcome {}
+    }
 
     public record Command(
             String clientNotificationId,
@@ -79,8 +106,51 @@ public class SubmissionService {
             Instant expiresAt,
             byte[] contentPayload) {}
 
+    /**
+     * T053 — the deduplication check, inside the acceptance transaction (Principle II).
+     *
+     * <p>Placed here rather than ahead of the transaction on purpose: a suppression decided outside it
+     * could suppress and then fail to record, leaving a notification silently dropped with nothing to
+     * show it. The check and its record commit together or not at all.
+     */
     @Transactional
-    public Accepted accept(Command cmd) {
+    public Outcome submit(Command cmd) {
+        if (flags.dedupSubmission()) {
+            DeduplicationKey key = new DeduplicationKey(cmd.sourceSystem(), cmd.correlationId());
+            DeduplicationDecision decision =
+                    DeduplicationDecision.evaluate(
+                            deduplication.findMostRecent(key), clock.now(), dedupWindow);
+
+            if (decision.suppress()) {
+                UUID original = decision.originalNotificationId().orElseThrow();
+                return suppress(cmd, key, original);
+            }
+        }
+        return accept(cmd);
+    }
+
+    private Outcome suppress(Command cmd, DeduplicationKey key, UUID originalNotificationId) {
+        Instant now = clock.now();
+        deduplication.recordSuppression(
+                ids.newId(), key, originalNotificationId, cmd.clientNotificationId(), now);
+
+        // FR-143: suppression must never be silent. The audit record is attributed to the ORIGINAL
+        // notification, because the suppressed submission never became one — the same reason a
+        // rejection has no notification to attach to (phase-1 FR-007).
+        audit.record(
+                originalNotificationId,
+                cmd.correlationId(),
+                AuditEventType.NOTIFICATION_SUPPRESSED,
+                new AuditPayload.NotificationSuppressed(
+                        cmd.clientNotificationId(),
+                        cmd.sourceSystem(),
+                        cmd.correlationId(),
+                        originalNotificationId.toString()));
+
+        return new Outcome.Suppressed(originalNotificationId, cmd.clientNotificationId(), now);
+    }
+
+    private Outcome.Accepted accept(Command cmd) {
         Instant now = clock.now();
         UUID notificationId = ids.newId();
 
@@ -182,7 +252,7 @@ public class SubmissionService {
         // 6. The handoff — last, and inside the same transaction.
         outbox.append(notificationId, now);
 
-        return new Accepted(notificationId, cmd.clientNotificationId(), NotificationState.ACCEPTED, now);
+        return new Outcome.Accepted(notificationId, cmd.clientNotificationId(), NotificationState.ACCEPTED, now);
     }
 
     /** A derived, non-reversible reference so audit can cite content without containing it (FR-051). */

@@ -209,6 +209,43 @@ a decision rather than an oversight.
 | Routing policy fixed at startup | ADR-014 |
 | Hand-written controllers plus conformance test | ADR-013 |
 
+## ADR-023: A reclaimed re-attempt upserts its `delivery_attempt` row
+
+**Status**: Accepted, during implementation of US3.
+
+**Context**: The idempotency key includes the attempt number (ADR-019), and a reclaimed re-attempt
+reuses its number — that is precisely what makes the repeat recognisable to the provider (FR-161).
+But `delivery_attempt` carries `uq_attempt_number UNIQUE (delivery_id, attempt_number)` from phase 1,
+so the re-attempt cannot insert a row. This was not anticipated when ADR-019 was written; the reclaim
+path threw a duplicate-key error the first time it was executed against a real database.
+
+**Options**:
+
+1. **Assign the re-attempt a fresh number.** Satisfies the constraint. Also changes the key, which
+   defeats the entire purpose of the reclaim being safe — the provider would see a new call, not a
+   repeat, and could deliver twice.
+2. **Drop the unique constraint.** Removes a real invariant to accommodate one path. The constraint is
+   what stops two rows claiming to be the same attempt.
+3. **Upsert the row.** `ON CONFLICT (delivery_id, attempt_number) DO UPDATE`, resetting the outcome to
+   `PENDING` and clearing the stale finish data.
+
+**Decision**: option 3.
+
+**Reasoning**: a reclaimed re-attempt *is* the same logical attempt, executed again. The row should
+therefore describe one attempt, not two. Option 1 would have satisfied a constraint by breaking a
+requirement, which is the worst available trade — it would have looked correct and silently removed the
+guarantee.
+
+**Consequence**: the stranded attempt's start time is overwritten, so the row does not show that the
+attempt ran twice. That is not lost: `DELIVERY_RECLAIMED` records it, with the attempt count and the
+time, and is the only place that also records *why*. An operator asking "was this attempted twice"
+reads the audit trail, not the attempt row.
+
+**Also**: the row id must come from `RETURNING`, not from the generated value. On conflict the existing
+row keeps its own id, so using the generated one would leave the outcome update matching nothing and
+the attempt would stay `PENDING` forever — a silent stall in the code path that exists to fix a silent
+stall.
+
 ## Open — carried into implementation, not defaulted
 
 | ID | Open decision | Why it is not being assumed |

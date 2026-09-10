@@ -1,5 +1,6 @@
 package com.notification.persistence;
 
+import com.notification.config.FeatureFlags;
 import com.notification.domain.model.Channel;
 import com.notification.domain.model.Delivery;
 import com.notification.domain.model.RecipientRef;
@@ -20,9 +21,14 @@ import org.springframework.stereotype.Repository;
 public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
 
     private final JdbcClient jdbc;
+    private final boolean reclaimEnabled;
 
-    public JdbcDeliveryRepository(JdbcClient jdbc) {
+    public JdbcDeliveryRepository(JdbcClient jdbc, FeatureFlags flags) {
         this.jdbc = jdbc;
+        // Flag-gated in SQL rather than by branching between two queries, so the enabled and
+        // disabled paths cannot drift apart. With the flag off the predicate is constant-false and
+        // the plan is identical to phase 1 (FR-164).
+        this.reclaimEnabled = flags.deliveryReclaim();
     }
 
     @Override
@@ -70,9 +76,25 @@ public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
                         """
                         WITH claimed AS (
                             SELECT d.id FROM delivery d
-                            WHERE d.state IN ('QUEUED', 'RETRY_SCHEDULED')
-                              AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
-                              AND (d.claimed_until IS NULL OR d.claimed_until < ?)
+                            WHERE (
+                                    d.state IN ('QUEUED', 'RETRY_SCHEDULED')
+                                    AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+                                    AND (d.claimed_until IS NULL OR d.claimed_until < ?)
+                                  )
+                               OR (
+                                    -- Feature 002 T047/FR-159: reclaim a delivery stranded
+                                    -- mid-attempt. IN_PROGRESS with an EXPIRED lease means the
+                                    -- worker that held it is gone; without this the row is never
+                                    -- re-claimed and the notification reports IN_PROGRESS forever.
+                                    --
+                                    -- claimed_until IS NOT NULL is required: a row mid-attempt under
+                                    -- a live worker has its lease NULLed by update(), and reclaiming
+                                    -- that would steal work from a running attempt.
+                                    ? = true
+                                    AND d.state = 'IN_PROGRESS'
+                                    AND d.claimed_until IS NOT NULL
+                                    AND d.claimed_until < ?
+                                  )
                             ORDER BY d.state_changed_at
                             LIMIT ?
                             FOR UPDATE SKIP LOCKED
@@ -82,6 +104,8 @@ public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
                         RETURNING d.*, (SELECT recipient_ref FROM recipient WHERE id = d.recipient_id) AS recipient_ref
                         """)
                 .param(Timestamp.from(now))
+                .param(Timestamp.from(now))
+                .param(reclaimEnabled)
                 .param(Timestamp.from(now))
                 .param(limit)
                 .param(Timestamp.from(leaseUntil))

@@ -13,10 +13,21 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 /**
  * T035 — duplicate client identifiers are two independent notifications (FR-008b, spec D4).
  *
- * <p>This is deliberately NOT idempotency, which constitution v2.0.0 register item 9 defers. If
- * the second submission ever returns the first one's identity or state, that is a defect, not an
- * optimisation.
+ * <p>US3 changes this, so the flag is pinned off here rather than inherited from the shipped default.
+ * Kept rather than deleted (T058): this is the record of what the service did before deduplication
+ * existed, and FR-105 makes it a live requirement, not history — with the flag off the behaviour must
+ * still be exactly this. Deleting the class would have removed the only place that says so.
+ *
+ * <p>Note what did <b>not</b> change: a repeated {@code clientNotificationId} is still not the
+ * deduplication boundary. That boundary is {@code (sourceSystem, correlationId)} (spec D9), and the
+ * fixture happens to derive the correlation identifier from the client identifier, which is why the
+ * flag matters to these cases at all. A client identifier remains descriptive, not identifying
+ * (FR-008a).
+ *
+ * <p>With the flag <b>on</b>, {@link DuplicateSuppressionTest} asserts the reverse.
  */
+@org.springframework.test.context.TestPropertySource(
+        properties = "notification.features.dedup-submission=false")
 class DuplicateSubmissionTest extends SubmissionTestSupport {
 
     @Autowired private JdbcClient jdbc;
@@ -49,8 +60,9 @@ class DuplicateSubmissionTest extends SubmissionTestSupport {
 
     @Test
     void theSecondSubmissionIsNotSuppressed() throws Exception {
-        // The failure mode this guards: an "optimisation" that returns the stored state instead of
-        // creating a second notification would silently implement the deferred deduplication.
+        // The failure mode this guards: deduplication leaking past its flag. Before US3 this stood
+        // against an "optimisation" that returned the stored state; now it stands against the real
+        // feature applying when it was switched off.
         int before = deliveriesForClientId("dup-3");
         submit("dup-3");
         submit("dup-3");

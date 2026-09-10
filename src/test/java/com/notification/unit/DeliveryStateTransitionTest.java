@@ -45,6 +45,11 @@ class DeliveryStateTransitionTest {
                         DeliveryState.IN_PROGRESS, DeliveryState.EXPIRED),
                 org.junit.jupiter.params.provider.Arguments.of(
                         DeliveryState.RETRY_SCHEDULED, DeliveryState.IN_PROGRESS),
+                // Feature 002 T046/FR-159: reclaim of a delivery stranded mid-attempt. Declared in
+                // the table like any other transition rather than handled as an exception path —
+                // Principle IV admits no special cases.
+                org.junit.jupiter.params.provider.Arguments.of(
+                        DeliveryState.IN_PROGRESS, DeliveryState.QUEUED),
                 org.junit.jupiter.params.provider.Arguments.of(
                         DeliveryState.RETRY_SCHEDULED, DeliveryState.EXPIRED));
     }
