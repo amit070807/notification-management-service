@@ -188,6 +188,103 @@ The retry now leaves a legible trail: a `RETRY_SCHEDULED` and a `RETRY_EXECUTED`
 **Change routing** — `src/main/resources/routing-policy.yaml`, then restart. The policy is fixed at
 startup on purpose (ADR-014).
 
+### Testing severity-ordered claim, step by step
+
+**The fastest proof is the suite.** Twenty-five tests cover this feature, and unlike a manual run they
+are deterministic:
+
+```bash
+./gradlew test --tests '*Severity*' --tests '*ClaimOrder*' \
+               --tests '*ClaimEligibility*' --tests '*WorkerProperties*'
+```
+
+That includes the pairwise rank truth table, the four-severity claim order, the batch being *processed*
+in claim order, reclaims being ordered rather than privileged, starvation asserted as intended, and the
+flag-off baseline.
+
+**To watch it happen instead**, two properties and a restart:
+
+```yaml
+# src/main/resources/application.yaml
+notification:
+  features:
+    severity-claim-order: true
+  worker:
+    batch-size: 1     # one delivery per poll, so the order is observable at all
+```
+
+Batch size matters here. With the default of 50 the whole backlog is claimed in one poll and the
+ordering question becomes *processing* order rather than claim order — a different requirement (FR-205),
+tested separately.
+
+Now submit a `LOW` notification and then a `CRITICAL` one, both held until the same instant. The hold is
+what makes this deterministic: the worker polls every second, so without it the older `LOW` delivery is
+simply gone before the `CRITICAL` one exists, and you learn nothing.
+
+```bash
+DUE=$(python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc)+d.timedelta(minutes=2)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+
+for S in LOW CRITICAL; do
+  curl -s -X POST localhost:8080/api/v1/notifications \
+    -H 'Content-Type: application/json' -d "{
+    \"clientNotificationId\":\"sev-$S\",\"sourceSystem\":\"billing\",\"correlationId\":\"corr-sev-$S\",
+    \"notificationType\":\"ALERT\",\"severity\":\"$S\",\"priority\":\"NORMAL\",
+    \"recipients\":[\"user-1\"],\"requestedChannels\":[\"EMAIL\"],
+    \"createdAt\":\"2026-09-07T10:00:00Z\",\"notBefore\":\"$DUE\",
+    \"content\":{\"body\":\"hello\"}}" -o /dev/null -w "$S -> %{http_code}\n"
+done
+```
+
+`LOW` goes first, so it is the **older** of the two. Wait for the two minutes to pass, then ask the
+database what order the attempts actually happened in:
+
+```bash
+docker compose exec -T postgres psql -U notifications -d notifications -c "
+SELECT n.severity, d.channel, a.attempt_number, a.started_at
+FROM delivery_attempt a
+JOIN delivery d ON d.id = a.delivery_id
+JOIN notification n ON n.id = d.notification_id
+WHERE n.client_notification_id LIKE 'sev-%'
+ORDER BY a.started_at;"
+```
+
+Expect `CRITICAL` first despite being younger. Expect **two** `CRITICAL` rows: the policy escalates to
+`SMS` at `CRITICAL`, so that submission produces an SMS delivery as well as the EMAIL one it asked for,
+and both outrank `LOW`.
+
+Claim order is not visible through the API, only in the database (G-63). That is a deliberate limitation
+of a feature this size, not an oversight.
+
+**Prove the starvation is real**, because it is the part most likely to be mistaken for a bug. Leave the
+`LOW` delivery undelivered, keep `CRITICAL` work arriving, and look at what is still queued:
+
+```bash
+docker compose exec -T postgres psql -U notifications -d notifications -c "
+SELECT n.severity, n.client_notification_id, d.state, d.state_changed_at
+FROM delivery d
+JOIN notification n ON n.id = d.notification_id
+WHERE d.state IN ('QUEUED', 'RETRY_SCHEDULED')
+ORDER BY d.state_changed_at;"
+```
+
+An aged `LOW` row sitting in `QUEUED` while higher-severity work flows past it is **correct behaviour**,
+accepted by decision D-15. Nothing in the system distinguishes it from a stalled worker (G-64).
+
+Note what this query deliberately does not do: order by `n.severity`. Severity is stored as `text`, so a
+lexicographic sort gives `CRITICAL, HIGH, LOW, MEDIUM` — the top two right and the bottom two inverted.
+That near-miss is gap G-60, and it is the single easiest way to get this feature wrong.
+
+**Then prove the rollback**, since it is the only mitigation the design offers:
+
+```yaml
+notification:
+  features:
+    severity-claim-order: false
+```
+
+Restart, and the starved `LOW` delivery is claimed on the next poll. Claim order returns to oldest-first
+and severity stops influencing it entirely.
+
 ## Tests
 
 ```bash
