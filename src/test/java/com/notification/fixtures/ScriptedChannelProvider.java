@@ -104,6 +104,17 @@ public final class ScriptedChannelProvider implements ChannelProviderPort {
         return this;
     }
 
+    /**
+     * Recipients seen, <b>in call order</b>.
+     *
+     * <p>Feature 003 FR-205 is about the order the worker actually attempted deliveries in, which is
+     * only observable here — the database records which attempts happened, not the sequence they were
+     * dispatched in, and a mutable test clock makes their timestamps tie.
+     */
+    public List<RecipientRef> recipientsSeen() {
+        return List.copyOf(calls);
+    }
+
     public int callCount() {
         return calls.size();
     }

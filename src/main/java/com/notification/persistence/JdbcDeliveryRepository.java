@@ -22,6 +22,17 @@ public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
 
     private final JdbcClient jdbc;
     private final boolean reclaimEnabled;
+    private final boolean severityOrderEnabled;
+
+    /**
+     * The severity rank rendered as SQL, built once (feature 003 ADR-027).
+     *
+     * <p>Generated from {@code Severity} rather than written out here, because a hand-written
+     * {@code CASE} would be a second declaration of the rank able to disagree with the enum invisibly —
+     * both places looking right, only the delivery order wrong (FR-202).
+     */
+    private static final String SEVERITY_RANK_TERM =
+            com.notification.domain.model.SeverityOrdering.flaggedRankTerm("n.severity");
 
     public JdbcDeliveryRepository(JdbcClient jdbc, FeatureFlags flags) {
         this.jdbc = jdbc;
@@ -29,6 +40,7 @@ public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
         // disabled paths cannot drift apart. With the flag off the predicate is constant-false and
         // the plan is identical to phase 1 (FR-164).
         this.reclaimEnabled = flags.deliveryReclaim();
+        this.severityOrderEnabled = flags.severityClaimOrder();
     }
 
     @Override
@@ -67,15 +79,50 @@ public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
                 .list();
     }
 
+    /**
+     * Claims a batch of due deliveries, highest severity first (feature 003 FR-201).
+     *
+     * <p>FOR UPDATE SKIP LOCKED is what makes two workers safe on one delivery: a row already locked by
+     * another worker is skipped rather than waited on (Principle II). H2 was rejected in ADR-003
+     * precisely because its locking semantics differ here.
+     *
+     * <p>Four CTEs rather than the two this used to need, and none is decoration. The claim is
+     * {@code UPDATE … FROM candidate … RETURNING}, and SQL does not guarantee {@code RETURNING} preserves
+     * the CTE's {@code ORDER BY} (B-05). So the intended position is recorded with {@code ROW_NUMBER()}
+     * and the final projection sorts by it — otherwise selection order would be correct and processing
+     * order arbitrary, which passes every test today and breaks on a plan change with no code change to
+     * blame (ADR-028, FR-205).
+     *
+     * <p>The numbering is a <b>separate</b> CTE from the locking one because PostgreSQL rejects
+     * {@code FOR UPDATE} in a query containing a window function outright: "FOR UPDATE is not allowed
+     * with window functions". So {@code locked} takes the rows under the lock, in order, and
+     * {@code candidate} numbers that already-locked set. Both order by the same expression, and
+     * {@code locked} exposes the rank as a column so the second sort reads it rather than recomputing
+     * it — one evaluation, one bound flag, no chance of the two sorts disagreeing.
+     *
+     * <p>Two things about this query are easy to get wrong and are load-bearing:
+     *
+     * <ul>
+     *   <li><b>{@code FOR UPDATE OF d}</b>, not bare {@code FOR UPDATE}. Now that {@code notification} is
+     *       joined, a bare lock would also lock the notification row — contending with the acceptance
+     *       transaction over rows this query has no business holding. Invisible until a worker and a
+     *       submitter meet.
+     *   <li>The {@code WHERE} clause is <b>unchanged</b> from before severity ordering existed. FR-204
+     *       permits reordering the eligible set and nothing else; a join that narrowed it would leave
+     *       some delivery permanently unclaimable while every ordering test still passed.
+     * </ul>
+     *
+     * <p>The severity term applies to the whole eligible set, reclaim branch included — decision D-16.
+     * Exempting reclaims would mean a second place the rank is applied, which is what FR-202 forbids.
+     */
     @Override
     public List<Delivery> claimDue(Instant now, Instant leaseUntil, int limit) {
-        // FOR UPDATE SKIP LOCKED is what makes two workers safe on one delivery: a row already
-        // locked by another worker is skipped rather than waited on (Principle II). H2 was
-        // rejected in ADR-003 precisely because its locking semantics differ here.
         return jdbc.sql(
                         """
-                        WITH claimed AS (
-                            SELECT d.id FROM delivery d
+                        WITH locked AS (
+                            SELECT d.id, d.state_changed_at, %1$s AS severity_rank
+                            FROM delivery d
+                            JOIN notification n ON n.id = d.notification_id
                             WHERE (
                                     d.state IN ('QUEUED', 'RETRY_SCHEDULED')
                                     AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
@@ -95,14 +142,30 @@ public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
                                     AND d.claimed_until IS NOT NULL
                                     AND d.claimed_until < ?
                                   )
-                            ORDER BY d.state_changed_at
+                            ORDER BY severity_rank DESC, d.state_changed_at
                             LIMIT ?
-                            FOR UPDATE SKIP LOCKED
+                            FOR UPDATE OF d SKIP LOCKED
+                        ),
+                        candidate AS (
+                            SELECT id,
+                                   ROW_NUMBER() OVER (ORDER BY severity_rank DESC, state_changed_at) AS ord
+                            FROM locked
+                        ),
+                        claimed AS (
+                            UPDATE delivery d SET claimed_until = ?
+                            FROM candidate WHERE d.id = candidate.id
+                            RETURNING d.*,
+                                (SELECT recipient_ref FROM recipient WHERE id = d.recipient_id) AS recipient_ref
                         )
-                        UPDATE delivery d SET claimed_until = ?
-                        FROM claimed WHERE d.id = claimed.id
-                        RETURNING d.*, (SELECT recipient_ref FROM recipient WHERE id = d.recipient_id) AS recipient_ref
-                        """)
+                        SELECT claimed.* FROM claimed
+                        JOIN candidate ON candidate.id = claimed.id
+                        ORDER BY candidate.ord
+                        """
+                                .formatted(SEVERITY_RANK_TERM))
+                // Parameter order follows the query text. The severity flag is bound ONCE: the rank is
+                // computed as a column in `locked` and both sorts read that column, so there is no second
+                // occurrence to keep in step.
+                .param(severityOrderEnabled)
                 .param(Timestamp.from(now))
                 .param(Timestamp.from(now))
                 .param(reclaimEnabled)
