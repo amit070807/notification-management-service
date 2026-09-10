@@ -20,8 +20,10 @@ Java 21 · Spring Boot · Gradle · PostgreSQL 16
 | Docker | Engine 25+ | PostgreSQL, and Testcontainers for integration tests. The build negotiates API 1.44, which Engine 25 and later accept |
 | Gradle | none needed | Use the committed wrapper (`./gradlew`) |
 
-No credentials are required. All channel providers are simulated, push included; the repository contains
-no real secrets, only `.env.example`.
+No **real** provider credentials are required: every channel provider is simulated, push included, and the
+repository holds no secrets, only `.env.example`. Push is the one channel that still needs a credential
+*value* to be present — any string will do, because nothing authenticates it — since a missing one is
+reported as `AUTH_ERROR` by design (FR-115). See the push walkthrough below.
 
 ## Run it
 
@@ -71,7 +73,7 @@ two sources of truth for one question (ADR-017).
 channels:
   PUSH:
     enabled: true
-    minimum-severity: MEDIUM
+    minimumSeverity: MEDIUM   # camelCase: RoutingPolicyLoader reads raw YAML, not relaxed-bound
 ```
 
 Push credentials are configuration, and never reach a response, a log or a metric label:
@@ -163,6 +165,175 @@ The retry now leaves a legible trail: a `RETRY_SCHEDULED` and a `RETRY_EXECUTED`
 
 **Change routing** — `src/main/resources/routing-policy.yaml`, then restart. The policy is fixed at
 startup on purpose (ADR-014).
+
+### Testing the phase-2 features, step by step
+
+Four user stories shipped in this phase. Each has a test filter that proves it in seconds, and a recipe
+for watching it happen against a running service.
+
+**Prove all four from the suite** — deterministic, and the only route that covers the failure paths:
+
+```bash
+./gradlew test --tests '*Push*'                                    # US1 — push channel (20 tests)
+./gradlew test --tests '*PerProviderRetry*' --tests '*ProviderErrorMapping*' \
+               --tests '*ChannelExtensibility*'                    # US2 — provider consolidation (18)
+./gradlew test --tests '*Duplicate*' --tests '*Dedup*' --tests '*Reclaim*' \
+               --tests '*Stranded*' --tests '*IdempotencyKey*'     # US3 — dedup and reclaim (50)
+./gradlew test --tests '*RetryAudit*' --tests '*RetryPairing*' \
+               --tests '*AuditCompleteness*'                       # US4 — retry audit trail (16)
+```
+
+#### US1 — push delivers, and is inert until you enable it
+
+Enable the channel in `src/main/resources/routing-policy.yaml` and restart. The policy `enabled` key
+**is** the push feature flag; there is no separate boolean (ADR-017).
+
+```yaml
+channels:
+  PUSH:
+    enabled: true
+```
+
+Push also needs a credential value, or every attempt is a terminal `AUTH_ERROR` — see below. Any string
+works; nothing authenticates it. In `application.yaml`:
+
+```yaml
+notification:
+  channel:
+    credentials:
+      PUSH:
+        token: ${PUSH_TOKEN:local-dev-token}
+        token-ref: env:PUSH_TOKEN
+```
+
+```bash
+curl -s -X POST localhost:8080/api/v1/notifications \
+  -H 'Content-Type: application/json' -d '{
+  "clientNotificationId":"push-demo","sourceSystem":"billing","correlationId":"corr-push-demo",
+  "notificationType":"ALERT","severity":"HIGH","priority":"NORMAL",
+  "recipients":["device-1"],"requestedChannels":["PUSH"],
+  "createdAt":"2026-09-07T10:00:00Z","content":{"body":"hello"}}'
+```
+
+Take the `id` from the response and read the status back. Expect a `PUSH` delivery reaching `DELIVERED`,
+reported per recipient and channel exactly as `EMAIL` and `SMS` are.
+
+**Remove the credential and try again** — this is the failure path worth seeing, not a misconfiguration
+to avoid. Every attempt returns `AUTH_ERROR`, which is terminal: the delivery reaches `FAILED` on attempt
+one with no retries, because a credential that is missing now will still be missing in thirty seconds
+(FR-115). Nothing refuses this at startup, so an operator who enables push and forgets the token gets a
+channel that fails 100% of the time and says why only in the audit trail.
+
+Now set `enabled: false`, restart, and submit the same thing. Expect `202` with **no push delivery**, and
+`channelOutcomes` carrying `CHANNEL_DISABLED`. The point is that a disabled channel is *explained* in the
+recorded routing decision rather than silently absent — which is why no second switch was introduced.
+
+#### US2 — a provider may differ in schedule, never opt out of the bound
+
+Give push its own backoff, then confirm the bound is not negotiable:
+
+```yaml
+notification:
+  retry:
+    overrides:
+      PUSH: { base-delay: PT5S, ceiling: PT120S }
+```
+
+That is honoured. Now try to exceed the maximum:
+
+```yaml
+notification:
+  retry:
+    overrides:
+      PUSH: { max-attempts: 99 }
+```
+
+The application **refuses to start**, naming the channel and the limit. `MAX_ALLOWED_ATTEMPTS` is 10, and
+an override above it is a configuration error worth failing on rather than honouring quietly — an
+unbounded channel is what source 4.5 forbids, and a plausible-looking schedule is exactly how it would
+go unnoticed.
+
+#### US3a — a duplicate submission is suppressed, and says so
+
+Set `dedup-submission: true`, restart, then submit the same `(sourceSystem, correlationId)` twice:
+
+```bash
+for i in 1 2; do
+  curl -s -X POST localhost:8080/api/v1/notifications \
+    -H 'Content-Type: application/json' -d '{
+    "clientNotificationId":"dup-demo","sourceSystem":"billing","correlationId":"corr-dup-demo",
+    "notificationType":"ALERT","severity":"HIGH","priority":"NORMAL",
+    "recipients":["user-1"],"requestedChannels":["EMAIL"],
+    "createdAt":"2026-09-07T10:00:00Z","content":{"body":"hello"}}' \
+    -o /dev/null -w "attempt $i -> %{http_code}\n"
+done
+```
+
+Expect `202` then **`200`**. Check the **status code alone** first, as that loop does: it is what a caller
+that ignores unfamiliar response fields would see, and a `202` carrying a `suppressed` flag would pass a
+body-reading test while still letting such a caller believe its notification was on its way (FR-144a).
+
+#### US3b — a delivery stranded mid-attempt is reclaimed
+
+Set `delivery-reclaim: true`, restart, and submit anything. Then stage the state a dead worker leaves
+behind — an `IN_PROGRESS` delivery whose lease has expired:
+
+```bash
+docker compose exec -T postgres psql -U notifications -d notifications -c "
+UPDATE delivery SET state = 'IN_PROGRESS', claimed_until = now() - interval '5 minutes'
+WHERE id = (SELECT d.id FROM delivery d
+            JOIN notification n ON n.id = d.notification_id
+            WHERE n.client_notification_id = 'reclaim-demo' AND d.channel = 'EMAIL');"
+```
+
+Within a poll or two the worker reclaims it and drives it to a terminal state. Watch the audit trail:
+
+```bash
+docker compose exec -T postgres psql -U notifications -d notifications -c "
+SELECT event_type, occurred_at, payload
+FROM audit_event
+WHERE notification_id = (SELECT id FROM notification WHERE client_notification_id = 'reclaim-demo')
+ORDER BY sequence;"
+```
+
+Expect a `DELIVERY_RECLAIMED` record carrying the attempts already made — a reclaim does **not** refund
+the retry budget, or a provider that crashes the worker every time would produce unbounded attempts
+while each individual reclaim looked reasonable.
+
+**Be honest about what this demo is.** Hand-writing the row fabricates a state rather than reaching it,
+and that distinction has already cost this project once: the reclaim fixture used to write the row by
+hand, and before the provider call moved out of the transaction it was describing a state the system
+could not actually produce, so the tests passed while proving nothing. `StrandedDeliveryReclaimTest`
+now strands a delivery by genuinely crashing the provider mid-attempt. That is the version to trust;
+this one is only for watching the recovery happen.
+
+#### US4 — scheduling and execution are distinguishable, and paired
+
+Make a channel fail twice, then succeed:
+
+```yaml
+notification:
+  channel:
+    simulate:
+      EMAIL: { fail-with: TRANSIENT_PROVIDER_FAILURE, fail-first-attempts: 2 }
+```
+
+Submit, let the retries run, then join the two record types on the reference they share:
+
+```bash
+docker compose exec -T postgres psql -U notifications -d notifications -c "
+SELECT event_type,
+       payload->>'attemptNumber' AS attempt,
+       payload->>'scheduledRef'  AS scheduled_ref
+FROM audit_event
+WHERE notification_id = (SELECT id FROM notification WHERE client_notification_id = 'retry-demo')
+  AND event_type IN ('RETRY_SCHEDULED', 'RETRY_EXECUTED')
+ORDER BY sequence;"
+```
+
+Each `RETRY_EXECUTED` carries the same `scheduledRef` as the `RETRY_SCHEDULED` that caused it, so across
+several retries a reader can pair them without knowing how the reference is derived. Both records existed
+before this phase; nothing tied them together.
 
 ## Tests
 
