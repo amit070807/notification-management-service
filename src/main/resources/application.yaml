@@ -46,6 +46,33 @@ notification:
     multiplier: 2
     ceiling: PT60S
     jitter-ratio: 0.2
+  # T002 — feature flags (ADR-016, FR-104). ALL DEFAULT FALSE.
+  #
+  # FR-105: with every flag off, observable behaviour MUST be indistinguishable from the phase-1
+  # baseline. That is what makes these a rollback mechanism rather than settings, and it is
+  # verified by running the unmodified phase-1 suite against a flagged-off build.
+  #
+  # Rollback is NOT symmetric for dedup-submission: notifications suppressed while it was enabled
+  # were never delivered and are not recoverable afterwards. Turning it off restores behaviour
+  # going forward only (spec G-48).
+  #
+  # The push channel is absent here on purpose — it is switched by routing-policy.yaml's
+  # per-channel `enabled` (ADR-017).
+  features:
+    dedup-submission: false
+    dedup-delivery: false
+    delivery-reclaim: false
+
+  # T003 — deduplication boundary window (spec D14, FR-141b).
+  # 24 hours is an engineering assumption, not a source requirement: neither requirements document
+  # states a duration. Same class as the retry bounds (phase-1 G-08).
+  #
+  # Consequence worth knowing: a caller that legitimately repeats the same event within 24 hours
+  # has the repeat suppressed. Under D9 event identifiers are unique per submitter so this cannot
+  # arise, but a periodic job reusing one identifier is exactly how that contract gets broken.
+  dedup:
+    window: PT24H
+
   worker:
     poll-interval-ms: 1000
   channel:
