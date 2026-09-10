@@ -155,3 +155,45 @@ unindexed, so this feature inherits an unindexed sort rather than introducing on
 Coverage floors are unchanged and must not fall: 90% domain, 80% overall. The new domain code is a rank
 and a string generator, so the domain floor is what thin tests would break first.
 
+## Validation record
+
+Executed `2026-09-10` at commit `1227786`, against `postgres:16-alpine` with migrations `V1`–`V6`
+applied. Scenario 0 first, as required.
+
+| Scenario | Executed by | Result |
+|---|---|---|
+| 0 — regression, flag off | `./gradlew clean test` | **PASS** — 335 tests, 0 failures |
+| 1 — younger CRITICAL before older LOW | `SeverityClaimOrderTest.aYoungerCriticalIsClaimedBeforeAnOlderLow` | PASS |
+| 2 — pairwise truth table | `SeverityRankTest`, `SeverityOrderingSqlTest` | PASS — 6 ordered pairs, plus totality and distinctness |
+| 3 — equal severity keeps oldest-first | `SeverityClaimOrderTest.equalSeverityKeepsOldestFirst` | PASS |
+| 4 — worker processes in claimed order | `ClaimOrderPreservedTest` | PASS |
+| 5 — reclaims ordered, not privileged | `SeverityReclaimOrderTest` | PASS — both directions |
+| 6 — starvation intended; flag off releases | `SeverityStarvationTest.Enabled`, `.Disabled` | PASS |
+| 7 — eligibility unchanged | `ClaimEligibilityUnchangedTest.Enabled`, `.Disabled` | PASS |
+| 8 — performance measured | `./gradlew perfTest --tests '…ClaimOrderCostTest'` | PASS — measured, no threshold asserted |
+
+`./gradlew clean check archTest privacyTest` passes. Coverage floors unchanged and met.
+
+### Scenario 0: no existing test needed editing for a behavioural reason
+
+Two existing test files changed, and neither is this feature's behaviour being retrofitted:
+
+| File | Change | Why it is not a behavioural edit |
+|---|---|---|
+| `FlagsOffBaselineTest` | `anUnsetFlagResolvesToOffRatherThanNull` rebuilt reflectively | It passed one `null` per known flag, so a fourth flag broke it on **arity**. The assertion is unchanged — every flag must resolve to off. Rebuilding it reflectively also removes the trap: the old shape reads as a failure to fix and invites adding a `null` without checking the new flag actually defaults off |
+| `ScriptedChannelProvider` | `recipientsSeen()` added | A new accessor on a test fixture. Nothing existing changed; FR-205 is about the order the worker *dispatched* in, which exists nowhere else — the database records which attempts happened, not their sequence, and the mutable clock makes their timestamps tie |
+
+The claim-ordering tests' own fixture also changed shape twice during development, both times because a
+premise was wrong rather than because behaviour moved: a CRITICAL submission produces **two** deliveries
+via SMS escalation, and a claim of 50 takes whatever else the shared container has due. Both are recorded
+in [testing.md](../../docs/testing.md#what-testing-actually-found).
+
+## Limitations this feature adds
+
+| Limitation | Detail |
+|---|---|
+| **G-64** | Unbounded starvation is now a deliberate property and it is **invisible**. An aged eligible `LOW` delivery is indistinguishable from a stalled worker. Documented, not mitigated; a starvation gauge would be the fix and is out of scope |
+| **G-63** | Claim order is not observable in any response. An operator cannot confirm from status that ordering happened; SC-203 and SC-205 test it at the repository and worker boundary instead |
+| **G-61** | Join versus denormalisation was decided on scope and single-source-of-truth grounds, **not** measured ones, because no performance target exists |
+| **D-16** | Recovery is not expedited. A reclaimed low-severity delivery waits behind fresh high-severity work |
+| **B-06** | The claim's sort is unindexed, before and after this feature |

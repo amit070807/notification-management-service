@@ -1,10 +1,12 @@
 # Constitution Compliance Review
 
-**Constitution v2.1.0** · Features `001-notification-management-core` and `002-push-dedup-refactor`
+**Constitution v2.1.0** · Features `001-notification-management-core`, `002-push-dedup-refactor` and
+`003-severity-claim-order`
 
 Recorded as review evidence, per the constitution's Review Evidence requirement. Each item is verified
-against a specific artefact rather than asserted. Two reviews are recorded: T113 for the core feature on
-2026-09-07 against v2.0.0, and T077 for the brownfield phase on 2026-09-10 against v2.1.0.
+against a specific artefact rather than asserted. Three reviews are recorded: T113 for the core feature on
+2026-09-07 against v2.0.0, T077 for the brownfield phase on 2026-09-10 against v2.1.0, and T035 for the
+severity-claim feature on 2026-09-10 against v2.1.0.
 
 The v2.1.0 amendment lifted register item 9's idempotency deferral and restored Principle III to
 "Idempotent, Deterministic Domain Core" with six new obligations. Those obligations are reviewed for the
@@ -191,3 +193,116 @@ may not have looked.** Two privacy tests would have reported green having scanne
 cannot run reports nothing at all. Both failures are invisible from the outside — a passing suite looks
 identical either way — which is why the anti-vacuity assertions and the "308 tests, 0 failures, from
 clean" phrasing are in this document rather than a bare claim that the gates pass.
+
+
+---
+
+## Part 3 — Severity-ordered delivery claim (T035, 2026-09-10, v2.1.0)
+
+One ordering rule in one place. Reviewed against v2.1.0 unamended — this feature needed no constitutional
+change, which is itself worth recording: it adds no dependency, no schema object, no state, no audit type
+and no contract surface.
+
+### Review Evidence checklist
+
+| Requirement | Verified by | Result |
+|---|---|---|
+| Contract and schema match the required field lists | `openapi.yaml` **untouched**; the contract tests pass unmodified | **PASS by non-participation.** FR-209 puts claim order outside every external interface, so there is no contract delta. Recorded so the absence reads as a decision |
+| State transitions are legal-set enforced | No transition added or changed | **PASS by non-participation.** Ordering decides *when* a delivery is picked up, never what may happen to it |
+| Each new failure path maps to the closed classification enum | No new failure path | **PASS by non-participation** |
+| Audit events exist for new significant actions | No new event type; `AuditCompletenessTest` still asserts all 13 reachable | **PASS.** Claim order is not an action, it is the order actions are taken in. Adding an event per claim would have written a row per delivery for no reader |
+| No sensitive value is newly logged or persisted | `privacyTest` green; severity reaches no new surface | **PASS.** Severity was already stored and returned. It is deliberately **not** added to a metric label — out of scope, and the one place it could plausibly have leaked |
+| No new dependency or abstraction lacks an ADR | ADR-025 … ADR-031 | **PASS** — 7 ADRs, and **no new dependency at all** |
+
+### Principle-by-principle
+
+| Principle | Evidence | Result |
+|---|---|---|
+| **I. Contract-First** | `openapi.yaml` unchanged; contract tests pass unmodified | PASS |
+| **II. Durable Accept-Then-Process** (NON-NEG) | The acceptance transaction is untouched — ADR-026 rejected the denormalised column precisely because populating it would have altered that transaction. `FOR UPDATE OF d` keeps the claim from locking `notification` rows and contending with it | PASS |
+| **III. Idempotent, Deterministic Domain Core** | The rank is a pure, total, distinct function of the enum, asserted pairwise. Ordering is deterministic given the same rows | PASS |
+| **IV. State Machine + Failure Taxonomy** (NON-NEG) | PASS by non-participation, as above | PASS |
+| **V. Auditability Without Sensitive Data** (NON-NEG) | No new payload, no new surface, no metric label | PASS |
+| **VI. Test-First, Deterministic** (NON-NEG) | Every task led with a failing test, and this time the red phase was **observed** rather than assumed — see the note below | PASS |
+| **VII. Modular Boundaries** | `archTest` green with no rule relaxed. The rank and its SQL generator live in `domain/model` with no framework import; only `persistence/` and `worker/` changed | PASS |
+| **VIII. Documented, Engineer-Owned** | ADR-025 … ADR-031, including one amended and one added *during* implementation when a decision arose that no existing ADR covered | PASS |
+
+### Principle VI: the deviation recorded in Part 2 did not recur
+
+Part 2 records that phases 5 and 6 of the brownfield work were committed without their integration tests
+having been run, because the Docker API pin was broken. That is the corrective this feature was built
+under, and it held:
+
+- Every test was run and **observed failing** before its implementation existed. The two unit suites
+  failed on missing symbols; `SeverityClaimOrderTest` failed 2 of 3 with the third — the age-order
+  assertion — correctly passing, because it describes baseline behaviour the feature does not change.
+- No phase was committed unverified. `./gradlew clean check archTest privacyTest` passed before each of
+  the three commits.
+
+**335 tests, 0 failures** from clean.
+
+### Quality gates
+
+| Gate | Status |
+|---|---|
+| Build, lint/format | PASS |
+| Unit, contract, integration tests | PASS — **335 tests, 0 failures** from `./gradlew clean test` |
+| Architecture gate | PASS — no rule relaxed |
+| Privacy gate (merge blocker) | PASS |
+| Coverage floors: 90% domain, 80% overall | PASS — **no threshold lowered** |
+| Full aggregate | PASS — `./gradlew clean check archTest privacyTest` |
+| Performance | Measured, no threshold asserted (G-61, G-40) |
+| Secret scan, dependency audit, OpenAPI diff | See the CI note below |
+
+### Non-negotiable principles: no exceptions taken
+
+Where a constraint and a convenience conflicted, the constraint won. Three cases, each of which had a
+cheaper wrong answer available:
+
+- **PostgreSQL rejects `FOR UPDATE` alongside a window function.** The cheap fix was to drop
+  `ROW_NUMBER()` and trust `RETURNING` order. That would have passed every test and left FR-205
+  unimplemented while looking implemented. Locking and numbering were split into separate CTEs instead
+  (ADR-028, amended).
+- **A `CRITICAL` submission produces two deliveries** via SMS escalation, which broke a fixture assuming
+  one. The cheap fix was to test at severities below `CRITICAL`, dropping the most important row of the
+  truth table to keep the fixture simple. The assertions moved to the notification instead (ADR-031).
+- **Starvation is asserted as intended behaviour.** The cheap answer to "a `LOW` delivery is never
+  delivered" is to add a starvation timer. That would silently reverse owner decision D-15 in a change
+  looking like a bug fix, so `SeverityStarvationTest` exists to make it fail loudly.
+
+### Defects and constraints found by the gates
+
+| Finding | Found by |
+|---|---|
+| PostgreSQL rejects `FOR UPDATE` in any query containing a window function, so the first version of the claim would not execute at all | The first run of `ClaimOrderUnchangedTest` |
+| A `CRITICAL` submission produces **two** deliveries — the routing policy escalates SMS at that severity — so `.single()` on "the delivery" threw | `SeverityClaimOrderTest` |
+| A claim of 50 takes whatever else the shared container has due, so an unfiltered eligibility assertion measured the whole suite rather than the feature | `ClaimEligibilityUnchangedTest` passing alone and failing in the suite |
+| The dependency-audit CI step passed its two flags as **one argument** via a YAML folded scalar, so the CVSS threshold would not have applied even once its Java problem was fixed | Reading the CI log after fixing a different failure in the same step |
+
+The last of these is the sharper form of a lesson already recorded in Part 2: **a gate that runs and
+enforces nothing is worse than one that fails**, because it reports success. One gate did not exist and
+was invoked; another existed and applied no threshold.
+
+### Deviations recorded, not waived
+
+| Item | Status |
+|---|---|
+| **Unbounded starvation of low severity (G-64, D-15)** | **Accepted by the project owner.** FR-207 forbids capping it. Also **invisible**: claim order appears in no response (G-63) and no starvation metric is in scope, so an aged eligible `LOW` delivery is indistinguishable from a stalled worker. Documented in `architecture.md`, `testing.md`, `README.md` and `migration-phase2.md`, the last with the query that reveals it. The flag is the only mitigation |
+| **Recovery is not expedited (D-16)** | **Accepted by the project owner.** Reclaimed deliveries are ordered on the same terms as fresh work, so a crashed `LOW` delivery waits behind new `CRITICAL` traffic |
+| **Claim order is unobservable (G-63)** | Accepted for a feature this size. Tested at the repository and worker boundary instead |
+| **G-61 decided on scope, not measurement** | The join-versus-denormalise choice could not rest on a number because none is stated. Measured afterwards at no resolvable cost, which establishes it was not paid for in latency — not that it was justified by latency |
+| **Behaviour at large table sizes is unmeasured** | B-06: the claim's sort was already unindexed before this feature and remains so. No source document states a volume to test against (phase-1 G-11) |
+| **CI remains partly unproven (G-46)** | Every code gate — build, architecture, tests, privacy, coverage, secret scan — passed in CI on the phase-2 branch. The dependency audit failed on an environment fault and its fix is not yet confirmed green; the OpenAPI diff is guarded to pull requests and has not run |
+
+### Reviewer note
+
+The pattern this feature contributes is narrower than the earlier two and worth stating on its own:
+**a near-miss is more dangerous than a miss.** Severity is stored as text, so ordering on the stored value
+gets `CRITICAL` and `HIGH` right and inverts `MEDIUM` and `LOW`. Every plausible smoke test — "the critical
+one came first" — passes against that implementation. It would have shipped, and half the severity
+ordering would have been silently backwards.
+
+The guard is that the truth table is **pairwise** rather than extremal, and the same reasoning produced the
+assertion that ranks are *distinct*: a duplicated rank makes two severities tie and fall through to age,
+which an extremes check also cannot see. Both assertions look like over-testing a four-value enum. They are
+the only two things in this feature that would have caught the failure it was most likely to have.

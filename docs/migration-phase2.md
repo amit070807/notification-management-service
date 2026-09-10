@@ -1,33 +1,42 @@
-# Migration and rollback: phase 2
+# Migration and rollback
 
-Three enhancements ship in this phase — the push channel, deduplication at both the submission and
-the delivery level, and the provider refactoring. Each is switchable independently. This document
-states how to enable each one, how to reverse it, and — the part that matters more — **what reversing
-it cannot recover**.
+Four enhancements are switchable independently: the push channel, deduplication at both the submission
+and the delivery level, the recovery of deliveries stranded by a crash, and severity-ordered delivery
+claiming. This document states how to enable each one, how to reverse it, and — the part that matters
+more — **what reversing it cannot recover**.
+
+Two of the four cannot be fully reversed, and they are the two worth reading before enabling anything:
+submission deduplication discards notifications permanently, and severity ordering can starve
+low-severity deliveries for as long as it is enabled.
 
 ## The rollback mechanism
 
-Every enhancement is off by default. `notification.features` in `application.yaml` holds three flags,
-all defaulting to `false`, and the push channel is switched by the routing policy's existing
-per-channel `enabled` setting rather than a fourth flag (ADR-017).
+Every enhancement is off by default. `notification.features` in `application.yaml` holds four flags, all
+defaulting to `false`. The push channel is the exception: it is switched by the routing policy's existing
+per-channel `enabled` setting rather than a flag here (ADR-017), because that setting already exists and
+already records *why* a channel was not selected.
 
 ```yaml
 notification:
   features:
-    dedup-submission: false   # suppress duplicate submissions at the boundary
-    dedup-delivery: false     # send a stable idempotency key on every provider call
-    delivery-reclaim: false   # recover deliveries stranded mid-attempt
+    dedup-submission: false      # suppress duplicate submissions at the event boundary
+    dedup-delivery: false        # send a stable idempotency key on every provider call
+    delivery-reclaim: false      # recover deliveries stranded mid-attempt
+    severity-claim-order: false  # claim higher-severity deliveries first
 ```
 
-The flags are **not runtime-toggleable**, and that is deliberate rather than an omission. Suppression
-is irreversible: a notification suppressed while deduplication was on was never delivered and cannot
-be recovered. Flipping the flag mid-flight would suppress across two states of the world with no
-clean boundary between them, so a restart is the boundary.
+The flags are **not runtime-toggleable**, and that is deliberate rather than an omission. Suppression is
+irreversible: a notification suppressed while deduplication was on was never delivered and cannot be
+recovered. Flipping the flag mid-flight would suppress across two states of the world with no clean
+boundary between them, so a restart is the boundary.
 
 Rolling back is therefore: set the flag to `false`, restart. There is no down-migration, and there
 does not need to be — see the next section.
 
 ## The database migrations are forward-only, and are safe to leave in place
+
+Severity ordering adds **no migration at all** — it reads severity through a join rather than
+denormalising a column onto `delivery` (ADR-026), so there is nothing schema-level to reverse.
 
 | Migration | Adds | Reversal |
 |---|---|---|
@@ -136,6 +145,72 @@ can distinguish that from the case it is designed for.
 The 24-hour window in the query matches the configured `notification.dedup.window`, which is an
 assumption (spec D14), not a stated requirement. If that window is changed, change this query with it.
 
+## Severity-ordered delivery claim (feature 003)
+
+**Enable**: `notification.features.severity-claim-order: true`. Restart.
+**Roll back**: set it to `false`. Restart.
+
+Higher-severity deliveries are claimed and attempted before lower-severity ones. Within equal severity
+the existing oldest-first order is unchanged, so severity refines the order rather than replacing it.
+
+### Cannot recover — and unlike the others, this one is ongoing rather than historical
+
+> **Low-severity deliveries can be starved without bound.** Under a sustained stream of higher-severity
+> traffic a `LOW` delivery may remain eligible and unclaimed **indefinitely**. This is decision D-15,
+> taken deliberately: severity means what it says, and a `LOW` notification that never arrives during an
+> incident is the accepted trade. FR-207 forbids adding an age-based override to cap it.
+
+Two operator consequences follow, and both are the kind of thing that gets misdiagnosed:
+
+**An aged `LOW` delivery sitting unclaimed is correct behaviour, not a stalled worker.** Gap G-64 records
+that nothing in the system distinguishes the two: claim order is invisible in every API response (G-63)
+and no starvation metric is in scope. If you see a `LOW` backlog that is not draining while high-severity
+work flows, the worker is healthy and the feature is working.
+
+**The flag is the only mitigation.** Because starvation is uncapped, there is no timer that will
+eventually release the backlog. Setting `severity-claim-order: false` restores the age-only order and the
+starved deliveries are claimed on the next run — verified, not assumed:
+`SeverityStarvationTest.Disabled` asserts exactly that.
+
+To see what is being starved before deciding:
+
+```sql
+SELECT n.severity, count(*) AS due, min(d.state_changed_at) AS oldest
+FROM delivery d
+JOIN notification n ON n.id = d.notification_id
+WHERE d.state IN ('QUEUED', 'RETRY_SCHEDULED')
+  AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= now())
+GROUP BY n.severity
+ORDER BY min(d.state_changed_at);
+```
+
+A growing `due` count against an `oldest` that keeps receding for the lower severities is starvation.
+That is the signal the system does not give you, which is why the query is here.
+
+### Recovery is not expedited
+
+Decision D-16: reclaimed deliveries — those recovered after a worker or provider crash (FR-159) —
+participate in severity ordering on the same terms as anything else. They hold **no** priority as
+recovery work.
+
+So a crashed `LOW` delivery waits behind freshly-arrived `CRITICAL` traffic, and during an incident that
+means the crashed one may not be retried for as long as the incident lasts. The converse also holds and
+is the reason the decision is not simply "reclaims go last": a crashed `CRITICAL` delivery is still
+recovered ahead of fresh `LOW` work.
+
+### What rollback does recover
+
+Everything else. No notification is discarded by this feature, nothing is written that a rollback leaves
+behind, and no schema object was added — there is no migration for this feature at all. Ordering changes
+which eligible delivery is taken next and nothing about which deliveries are eligible (FR-204).
+
+### Rollout note
+
+The flag can be enabled independently of the three phase-2 flags; it shares no state with them. Enable it
+when a severity-aware queue is wanted **and** an unbounded `LOW` backlog is acceptable. If the second
+condition does not hold, do not enable it — there is no partial setting, and FR-207 forecloses adding
+one.
+
 ## What the service cannot promise about provider-side deduplication
 
 The idempotency key makes a repeated provider call *recognisable*. It does not make the provider
@@ -163,8 +238,11 @@ Run: `2026-09-10`, commit `a9e305e`, against `postgres:16-alpine` with `V1`–`V
 | `dedup-submission: false`, phase-1 duplicate semantics intact | `DuplicateSubmissionTest` | 3 | pass |
 | `delivery-reclaim: false` | `ReclaimDisabledTest` | 1 | pass |
 | Push disabled via routing policy | `PushDisabledTest` | 3 | pass |
+| `severity-claim-order: false` restores the age-only claim | `ClaimOrderUnchangedTest` | 2 | pass |
+| `severity-claim-order: false` releases a starved backlog | `SeverityStarvationTest.Disabled` | 1 | pass |
+| Ordering never changes which deliveries are eligible | `ClaimEligibilityUnchangedTest` | 2 | pass |
 
-**17 tests, 0 failures, 0 errors.**
+**22 tests, 0 failures, 0 errors.**
 
 Two of these assert something that reads oddly and is intended. `ReclaimDisabledTest` asserts that a
 stranded delivery *stays* stranded, and `DuplicateSubmissionTest` asserts that a duplicate submission
@@ -186,11 +264,16 @@ Reproduce with:
 
 ## Recommended rollout order
 
+Ordered by how reversible each step is, most reversible first.
+
 1. **Push channel.** Additive, cleanly reversible, recovers nothing on rollback because it loses
    nothing.
 2. **`dedup-delivery`.** Adds a key to provider calls and changes nothing else. Nothing consumes it
    yet.
 3. **`delivery-reclaim`.** Only after step 2 is in place everywhere. This step fixes B-13 and is the
    one that needs provider-side deduplication to be real.
-4. **`dedup-submission`, per source system, after the identifier audit above.** Last, because it is
-   the only step whose effect cannot be undone.
+4. **`severity-claim-order`.** Fully reversible in the sense that nothing is destroyed, but it holds an
+   ongoing hazard while enabled: a low-severity backlog can grow without bound and nothing signals it.
+   Enable only if that is acceptable — there is no partial setting, and FR-207 forecloses adding one.
+5. **`dedup-submission`, per source system, after the identifier audit above.** Last, because it is the
+   only step whose effect cannot be undone at all: what it discarded stays discarded.

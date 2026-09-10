@@ -14,9 +14,9 @@ otherwise is rejected.
 
 | Layer | What it proves | Location |
 |---|---|---|
-| Unit / truth tables | Routing across every input combination; the retryability matrix; the deduplication boundary; the retry-pairing derivation; every state transition **including all illegal ones** | `src/test/java/com/notification/unit` |
+| Unit / truth tables | Routing across every input combination; the retryability matrix; the deduplication boundary; the retry-pairing derivation; the severity rank **pairwise**; every state transition **including all illegal ones** | `src/test/java/com/notification/unit` |
 | Contract | Requests and responses conform to `contracts/openapi.yaml`; code and contract declare identical enums | `.../contract` |
-| Integration | Full lifecycle against real PostgreSQL via Testcontainers; concurrency; timestamps; audit; suppression; reclaim | `.../integration` |
+| Integration | Full lifecycle against real PostgreSQL via Testcontainers; concurrency; timestamps; audit; suppression; reclaim; claim ordering | `.../integration` |
 | Architecture | The domain imports no framework and no adapter; adding a channel touches nothing outside `channel/` | `.../architecture` |
 | Privacy | No content, credential or unmasked recipient reference reaches audit, logs or metric labels | `.../privacy` |
 
@@ -41,10 +41,11 @@ Three decisions worth naming:
   string and searches every observable surface for it. Matching patterns for emails or phone numbers can
   have gaps and produce false negatives; a marker cannot. This is what caught the real leak described
   below.
-- **Every flag-gated feature has a paired off-test.** `DedupDisabledTest`, `ReclaimDisabledTest` and
-  `PushDisabledTest` assert the old behaviour still holds with the flag off — including, in the reclaim
-  case, that a known defect is faithfully preserved. It is the pair that demonstrates the flag is really
-  the switch; either test alone proves much less.
+- **Every flag-gated feature has a paired off-test.** `DedupDisabledTest`, `ReclaimDisabledTest`,
+  `PushDisabledTest` and `ClaimOrderUnchangedTest` assert the old behaviour still holds with the flag off
+  — including, in the reclaim case, that a known defect is faithfully preserved, and in the severity case
+  that ordering is ignored *entirely* rather than partially. It is the pair that demonstrates the flag is
+  really the switch; either test alone proves much less.
 
 ## What testing actually found
 
@@ -63,15 +64,25 @@ Recorded because "the tests pass" is a weaker claim than "the tests caught these
 | Fourteen Spring contexts × a 10-connection pool exceeded `max_connections`, so whichever class loaded last failed with "too many clients already" and looked like the defect | Full-suite run after the context count grew |
 | The worker claims a bounded batch oldest-first, so once the suite left more than one batch of due deliveries behind, a test's own new delivery was never attempted | `ExpiryOutranksRetryTest` failing in the suite and passing alone |
 | A `privacyTest` Gradle task that CI invoked **did not exist** — the commit that switched CI to it changed only `ci.yml` | `./gradlew clean check archTest privacyTest` |
+| PostgreSQL rejects `FOR UPDATE` in any query containing a window function, so the first severity-ordering query would not run at all | The first execution of `ClaimOrderUnchangedTest` |
+| A CRITICAL submission produces **two** deliveries — the routing policy escalates SMS at that severity — so a fixture assuming one delivery per notification broke | `SeverityClaimOrderTest`, on `.single()` returning two rows |
+| A claim of 50 takes whatever else the shared container has due, so an unfiltered eligibility count asserted the state of the whole suite rather than the feature | `ClaimEligibilityUnchangedTest` passing alone and failing in the suite |
+| The dependency audit gate ran with its two flags collapsed into **one argument** by a YAML folded scalar, so the CVSS threshold would not have applied even once Java was found | Reading the CI log after fixing a different failure in the same step |
 
 The content leak is the argument for the whole approach. The risk was identified during planning and the
 field was documented as "bounded, non-content" — but only the length was ever enforced, and bounding
 length does not stop prose.
 
-The last four are the argument for a second discipline: **a gate that cannot run is not a gate.** All
-four were latent for as long as the integration suite was unrunnable on the development machine, and all
-four surfaced within minutes of fixing a one-line Docker API pin. Two of them had already been committed
-as working features.
+The four rows about the coverage gate, the reclaim attempt row, the connection pool and the batch
+starvation are the argument for a second discipline: **a gate that cannot run is not a gate.** All four
+were latent for as long as the integration suite was unrunnable on the development machine, and all four
+surfaced within minutes of fixing a one-line Docker API pin. Two of them had already been committed as
+working features.
+
+The two rows about the missing `privacyTest` task and the collapsed dependency-audit arguments are the
+sharper version of the same point: **a gate that runs and enforces nothing is worse than one that
+fails**, because it reports success. One did not exist and was invoked; the other existed and applied no
+threshold.
 
 ### A recurring shape
 
@@ -80,10 +91,18 @@ the source left open is usually hiding a defect.** The content field "bounded, n
 vocabulary "obviously reachable"; the reclaim path "just re-runs the attempt". Each read as settled and
 each was wrong in a way only an executable check exposed.
 
-A second shape appeared in this phase: **a test that finds nothing may not have looked.** Two privacy
+A second shape: **a test that finds nothing may not have looked.** Two privacy
 tests would have passed vacuously — one because the push credential was never bound, another because
 two of the three new audit types are only written when a flag is on. Both now assert that the thing
 being scanned was actually produced. A scan that finds nothing because nothing happened is not a pass.
+
+A third, from feature 003: **a near-miss is more dangerous than a miss.** Severity is stored as text, so
+ordering on the stored value gets `CRITICAL` and `HIGH` right and inverts `MEDIUM` and `LOW`. An
+implementation that simply sorted the column would pass every test phrased as "the critical one came
+first", ship, and mis-order half the severities forever. The guard is a pairwise truth table rather than
+an extremes check — and the same reasoning produced the assertion that ranks are *distinct*, since a
+duplicated rank makes two severities tie and fall through to age, which an extremes check also cannot
+see.
 
 ## Limitations
 
@@ -138,6 +157,22 @@ Every item here reaches the deliverable unresolved. DO-005 requires them stated 
   reachable state — the worker commits the lease and `IN_PROGRESS` in one transaction and calls the
   provider in the next — but the crash itself is simulated.
 
+### Deliberate and irreversible while enabled
+
+- **Unbounded starvation of low severity (G-64, decision D-15).** With severity-ordered claiming on, a
+  `LOW` delivery under sustained higher-severity traffic may remain eligible and unclaimed indefinitely.
+  FR-207 forbids capping it. It is also **invisible** — claim order appears in no response (G-63) and no
+  starvation metric is in scope, so an aged eligible `LOW` delivery is indistinguishable from a stalled
+  worker. `SeverityStarvationTest` asserts the starvation as *intended*, so a future "fix" reverses the
+  decision loudly rather than quietly.
+- **Recovery is not expedited (D-16).** Reclaimed deliveries participate in severity ordering on the same
+  terms as fresh work, so a crashed `LOW` delivery waits behind new `CRITICAL` traffic.
+- **Claim order is unobservable (G-63).** No response reveals it. It is tested at the repository and
+  worker boundary instead, which is why `ClaimOrderPreservedTest` asserts what the *provider* saw.
+- **The join-versus-denormalisation choice was not made on measured grounds (G-61).** No performance
+  target exists to decide against. Measurement afterwards found no resolvable cost, which is not the same
+  as the decision having been justified by measurement.
+
 ### Unresolved in the source
 
 - **The source document is an excerpt (G-01).** §4 runs 4.1, 4.2, 4.3, 4.5, 4.9 — sections 4.4, 4.6, 4.7
@@ -170,6 +205,9 @@ Every item here reaches the deliverable unresolved. DO-005 requires them stated 
 | A reclaimed attempt row is upserted, losing the stranded attempt's start time | It is the same logical attempt re-executed. A fresh attempt number would satisfy the constraint by changing the key, defeating the deduplication the reclaim exists to make safe. `DELIVERY_RECLAIMED` records that it happened twice |
 | The deduplication boundary is an index, not a unique constraint | A constraint would *reject* where the requirement is to *suppress*, and uniqueness across the pair is a caller contract this service cannot enforce (G-55) |
 | Leftover due deliveries are parked before each test | The worker claims a bounded batch oldest-first, so an accumulating suite starves its own newest delivery. Parking by pushing `next_attempt_at` out avoids inventing an outcome, unlike deleting or forcing a terminal state |
+| Severity read by join, not denormalised onto `delivery` | One source of truth and no migration, at the cost of a join in a query every delivery passes through. Measured at no resolvable cost, but chosen on scope grounds (ADR-026) |
+| The claim is four CTEs and a window function rather than a bare `ORDER BY` | More complex than Principle VII's simplicity default likes. Accepted because the simple version is wrong in a way no test would catch: `RETURNING` order is not guaranteed, so an ordering feature whose order never reaches the worker would look built (ADR-028) |
+| Claim-ordering tests assert on the **notification**, not a single delivery | A CRITICAL submission produces two deliveries via SMS escalation, and which channel the claim returns first is not something FR-201 governs. Asserting a delivery id would test the query plan |
 
 ## Running the tests
 
@@ -189,4 +227,4 @@ Coverage floors are 90% on domain packages and 80% overall, enforced by
 that has already cost one CI run: a filtered `test` rewrites `build/jacoco/test.exec` from the subset,
 so the coverage gate then measures the subset and fails on packages the full suite covers.
 
-**Current state**: 308 tests, 0 failures. `./gradlew clean check archTest privacyTest` passes.
+**Current state**: 335 tests, 0 failures. `./gradlew clean check archTest privacyTest` passes from clean.

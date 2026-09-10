@@ -122,6 +122,25 @@ CTE and the Java comparator — which is the same duplication ADR-027 exists to 
 **Consequence**: `ClaimOrderPreservedTest` asserts the order the worker observes, not the order the CTE
 computed, since only the former is what FR-205 is about.
 
+**Amended during implementation.** The intended shape — one CTE that both locks and numbers — does not
+run: PostgreSQL rejects `FOR UPDATE` in any query containing a window function outright, with
+*"FOR UPDATE is not allowed with window functions"*. Locking and numbering are therefore separate CTEs:
+
+```text
+locked     rows taken under the lock, ordered, limited; exposes the rank as a column
+candidate  numbers that already-locked set with ROW_NUMBER()
+claimed    UPDATE … FROM candidate … RETURNING
+SELECT     ORDER BY candidate.ord
+```
+
+Four CTEs where the plan said three, and the split turned out to be an improvement rather than a
+concession: because `locked` selects the rank as a column, both sorts read that column instead of
+recomputing the `CASE`. The rank is evaluated once and the flag is bound once, where the original shape
+would have interpolated the expression into two positions that had to be kept in step.
+
+This is also the reason ADR-029's "one `ORDER BY`" is worded as one *sort term*: the term appears in two
+syntactic positions, but as a column reference rather than as a duplicated expression.
+
 ## ADR-029: The flag is a term inside the single `ORDER BY`, not a second query
 
 **Status**: Accepted.
@@ -171,3 +190,51 @@ kind of slow test that gets deleted later.
 **Consequence**: one new property with an unchanged default. Not flag-gated — a default-preserving
 configuration knob is not a behaviour change.
 
+## ADR-031: Claim-ordering tests assert on the notification, not on a delivery id
+
+**Status**: Accepted, during implementation.
+
+**Context**: the first version of the test fixture assumed one notification produces one delivery, and
+resolved a delivery id with `.single()`. It failed: the routing policy sets `escalateAtSeverity: CRITICAL`
+on SMS (B-02), so a `CRITICAL` submission produces an EMAIL delivery **and** an escalated SMS one even
+though only EMAIL was requested.
+
+**Options**:
+
+1. **Suppress the escalation in the fixture**, by testing at severities below `CRITICAL` or by loading a
+   test-only routing policy.
+2. **Name the EMAIL delivery specifically** and assert on that.
+3. **Assert on the notification** a claimed delivery belongs to.
+
+**Decision**: option 3.
+
+**Reasoning**: option 1 would have removed `CRITICAL` from the tests of a feature whose entire purpose is
+that `CRITICAL` goes first — the most important row of the truth table, dropped to make the fixture
+simpler. Option 2 is subtly wrong: it asserts *which channel* the claim returned first, and FR-201 says
+nothing about that. Two deliveries of one notification tie on severity and on `state_changed_at`, so
+their relative order is whatever the plan produced. A test asserting it would be asserting the query
+plan.
+
+Severity is a property of the notification, so the notification is the right granularity for a severity
+assertion.
+
+**Consequence**: `SeverityClaimOrderSupport` exposes `claimNotifications(int)` alongside `claim(int)`, and
+`deliveriesOf` returns a set rather than a single id. The escalation is documented in the fixture rather
+than worked around, so the next person meeting two deliveries where they expected one finds the reason
+instead of the surprise.
+
+**Related finding**: the same fixture initially asserted an unfiltered count from a claim of 50, which
+takes whatever else the shared Testcontainers instance has due. It passed alone and failed in the suite.
+Claim-wide assertions cannot be isolated on a shared database, so `ClaimEligibilityUnchangedTest` filters
+to its own submissions.
+
+## Rejected outright
+
+- **A starvation cap.** FR-207 forbids it. Decision D-15 accepted unbounded starvation, and adding an
+  age override would silently reverse an owner decision.
+- **Ordering by `priority`.** FR-208 keeps `priority` behaviour-free. Using it here would resolve
+  phase-1 G-15 by accident, in a feature that is not about it.
+- **Preemption of an in-flight attempt.** Out of scope by the spec. Claim order governs what is picked
+  up next, never what is already running.
+- **A starvation metric.** G-64 records the observability hazard and accepts it. Adding a gauge is the
+  right fix and is more than a one-rule feature should carry.

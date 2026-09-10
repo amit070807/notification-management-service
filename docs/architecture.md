@@ -6,15 +6,16 @@ Governing documents: [constitution](../.specify/memory/constitution.md) v2.1.0 �
 [core specification](../specs/001-notification-management-core/spec.md) ·
 [brownfield specification](../specs/002-push-dedup-refactor/spec.md) ·
 [core ADRs](../specs/001-notification-management-core/research.md) (ADR-001–015) ·
-[brownfield ADRs](../specs/002-push-dedup-refactor/research.md) (ADR-016–022)
+[brownfield ADRs](../specs/002-push-dedup-refactor/research.md) (ADR-016–024) ·
+[severity-claim ADRs](../specs/003-severity-claim-order/research.md) (ADR-025–030)
 
 ---
 
 ## 1. What this service does
 
 Accepts notification requests, selects delivery channels, delivers asynchronously over email, SMS and
-push with bounded retry, suppresses duplicate submissions, recovers deliveries stranded by a crash,
-and exposes both delivery status and an audit history. Two HTTP APIs, one in-process worker, one
+push with bounded retry, claims higher-severity work first, suppresses duplicate submissions, recovers
+deliveries stranded by a crash, and exposes both delivery status and an audit history. Two HTTP APIs, one in-process worker, one
 PostgreSQL database, one deployable unit.
 
 ## 2. Requirements this service does NOT meet
@@ -65,6 +66,16 @@ half this service owns: that the key is stable across a crash and derivable from
 **Consequence**: enabling delivery reclaim against a provider that does not deduplicate on the key
 converts a stranded delivery into a duplicate delivery. That trade is spelled out in
 [migration-phase2.md](./migration-phase2.md) and must be confirmed per provider before rollout.
+
+### Low-severity deliveries can be starved without bound (G-64, decision D-15)
+
+With severity-ordered claiming enabled, a `LOW` delivery under sustained higher-severity traffic may
+remain eligible and unclaimed **indefinitely**. This is the owner's decision, not an oversight: severity
+means what it says, and FR-207 forbids adding an age-based override to cap it.
+
+What makes it a limitation rather than merely a trade is that it is **invisible**. Claim order appears in
+no response, no starvation metric is in scope, and an aged eligible `LOW` delivery is therefore
+indistinguishable from a stalled worker. Turning the flag off is the only mitigation. See §8.
 
 ### The deduplication boundary rests on a caller contract this service cannot enforce (G-55, G-56)
 
@@ -261,7 +272,8 @@ defeated the deduplication the reclaim exists to make safe.
 ## 5. Key decisions
 
 Full reasoning in [core ADRs](../specs/001-notification-management-core/research.md) (ADR-001–015) and
-[brownfield ADRs](../specs/002-push-dedup-refactor/research.md) (ADR-016–022).
+[brownfield ADRs](../specs/002-push-dedup-refactor/research.md) (ADR-016–024) ·
+[severity-claim ADRs](../specs/003-severity-claim-order/research.md) (ADR-025–030).
 
 | Decision | Why |
 |---|---|
@@ -279,6 +291,10 @@ Full reasoning in [core ADRs](../specs/001-notification-management-core/research
 | Retry schedule is per channel; the retry **bound** is not | A provider may differ in how patiently it backs off. None may opt out of being bounded — §4.5 requires bounded retry, and an unbounded channel would be an unbounded loop wearing a bound's clothes. `MAX_ALLOWED_ATTEMPTS` throws at startup (FR-132) |
 | The suppression boundary is an index, not a unique constraint | A constraint would *reject* a duplicate where the requirement is to *suppress* it, and uniqueness across the pair is a caller contract this service cannot enforce (G-55) |
 | The retry audit pairing reference is derived, not a foreign key | A key to the audit row would have to be read back before the execution could be recorded, so the pairing would go missing in exactly the runs that went wrong — the runs someone reads the trail to understand |
+| Severity rank is an explicit enum field, not `ordinal()` | The declaration order agrees today, which is what makes it dangerous: reordering constants for readability would silently change delivery order (ADR-025) |
+| The severity `CASE` is generated from the enum | A hand-written one is a second declaration of the rank, able to disagree invisibly — both places correct in isolation, only the order wrong (ADR-027) |
+| Claim order is carried by `ROW_NUMBER()`, not trusted from `RETURNING` | SQL does not guarantee `RETURNING` preserves a CTE's order. Trusting it passes today and breaks on a plan change (ADR-028) |
+| Severity read by join, not denormalised onto `delivery` | One source of truth and no migration. Chosen on scope grounds, not measured ones — no performance target exists (ADR-026, G-61) |
 
 ## 6. State model
 
@@ -335,7 +351,76 @@ success and suppress on that.
 The 24-hour window is an **assumption** (spec D14), not a stated requirement. No source document gives
 a window.
 
-## 8. Privacy design
+## 8. Claim ordering
+
+The worker claims due deliveries **highest severity first, then oldest first**. Severity refines the
+existing age order rather than replacing it, so two deliveries of equal severity are still taken oldest
+first (FR-203).
+
+```text
+1. severity rank  DESC   CRITICAL > HIGH > MEDIUM > LOW   (only when the flag is on)
+2. state_changed_at ASC  the pre-existing order            (always)
+```
+
+Four things about this are decisions rather than mechanics, and each has a failure mode that would be
+invisible if it went the other way.
+
+**The rank is declared exactly once**, as a constructor parameter on the `Severity` enum. Not
+`ordinal()`: the constants happen to be declared in ascending rank order today, so `ordinal()` would work
+and would make delivery order a side effect of the order someone typed the constants in. Reordering them
+for readability would silently change which notifications go first.
+
+**The SQL is generated from that enum, not written by hand.** Severity persists as `text`, so PostgreSQL
+cannot order by rank without being told it, and the obvious `CASE n.severity WHEN 'CRITICAL' THEN 4 …`
+would be a second declaration free to disagree with the first. `SeverityOrdering` derives it instead. The
+trap this avoids is specific: lexicographic order is `CRITICAL < HIGH < LOW < MEDIUM`, so
+`ORDER BY severity ASC` puts `CRITICAL` and `HIGH` in the right places and inverts `MEDIUM` and `LOW`.
+Any test phrased as "the critical one came first" passes against that.
+
+**The order is carried through the claim in SQL, not re-sorted in Java.** The claim is
+`UPDATE … RETURNING`, and SQL does not guarantee `RETURNING` preserves a CTE's `ORDER BY`. So the ordered
+CTE records each row's position with `ROW_NUMBER()` and the final projection sorts by it. Trusting
+`RETURNING` would pass every test written against a batch of one, then break on an unrelated plan change
+with no code change to attribute it to. Re-sorting in Java would instead require severity on the
+`Delivery` record — a field carried solely to re-derive an order the database already computed — and would
+put the ordering logic in two places.
+
+**The numbering is a separate CTE from the locking one**, because PostgreSQL rejects `FOR UPDATE` in any
+query containing a window function. `locked` takes the rows under the lock and exposes the rank as a
+column; `candidate` numbers that already-locked set. Both sorts read the same column, so the rank is
+evaluated once.
+
+The claim reads severity through a **join** to `notification` rather than a denormalised column on
+`delivery`. That keeps one source of truth and needs no migration; measurement found no resolvable
+latency cost, though that was not the deciding argument, since no performance target exists to decide
+against (G-61).
+
+Two boundary details matter more than they look:
+
+- **`FOR UPDATE OF d`**, never bare `FOR UPDATE`. With `notification` joined, a bare lock would also hold
+  the notification row and contend with the acceptance transaction over rows the claim has no business
+  holding — invisible until a worker and a submitter meet.
+- The eligibility `WHERE` clause is **unchanged**. Ordering may reorder the eligible set and nothing else
+  (FR-204); a join that narrowed it would leave some delivery permanently unclaimable while every
+  ordering test still passed.
+
+### Starvation is a deliberate property
+
+Low-severity deliveries can be starved **without bound**. Under sustained higher-severity traffic a `LOW`
+delivery may remain eligible and unclaimed indefinitely. This is the owner's decision D-15 — severity
+means what it says — and FR-207 forbids adding an age-based override to cap it.
+
+It is also **invisible**. Claim order appears in no API response, and no starvation metric is in scope, so
+an aged eligible `LOW` delivery is indistinguishable from a stalled worker (G-64). Turning the flag off is
+the documented and only mitigation, and `SeverityStarvationTest` asserts starvation as *intended*
+behaviour precisely so a future change that "fixes" it fails loudly instead of quietly reversing a
+decision.
+
+Reclaimed deliveries participate on the same terms (D-16), so **recovery is not expedited**: a crashed
+`LOW` delivery waits behind fresh `CRITICAL` work. The converse holds too — a crashed `CRITICAL` is still
+recovered ahead of fresh `LOW` work — which is why the decision is not simply "reclaims go last".
+
+## 9. Privacy design
 
 Principle V is enforced structurally rather than by discipline:
 
@@ -358,7 +443,7 @@ including the three record types added in this phase. It is a merge blocker. Bec
 types exist only when their flag is on, the test enables both flags and asserts the records were
 actually written — a scan that finds nothing because nothing happened is not a pass.
 
-## 9. Execution approach
+## 10. Execution approach
 
 Single deployable. `OutboxPoller` and `DeliveryWorker` run in-process on a fixed delay, and both expose
 a public `runOnce()`/`drainOnce()` invoked directly by tests — no test waits on a scheduler, which
@@ -369,7 +454,7 @@ reclaim predicate is lease-based, so a second instance recovers the first instan
 without coordination. This is designed for but not required — the source states no volume target
 (G-11).
 
-Every enhancement in this phase is off by default and switchable per deployment. Enabling and reversing
+Every enhancement is off by default and switchable per deployment. Enabling and reversing
 each one, and what each reversal cannot recover, is in
 [migration-phase2.md](./migration-phase2.md). Measured cost is in
 [performance-phase2.md](./performance-phase2.md), which asserts no threshold because no source document

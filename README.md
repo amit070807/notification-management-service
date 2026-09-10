@@ -1,14 +1,16 @@
 # Notification Management Service
 
 Accepts notification requests, selects delivery channels, delivers asynchronously over email, SMS and
-push with bounded retry, suppresses duplicate submissions, recovers deliveries stranded by a crash, and
-exposes delivery status and audit history.
+push with bounded retry, claims higher-severity work first, suppresses duplicate submissions, recovers
+deliveries stranded by a crash, and exposes delivery status and audit history.
 
 Java 21 · Spring Boot · Gradle · PostgreSQL 16
 
 > **Two requirements are knowingly unmet**, and neither is an oversight — in both cases the source
-> document names an input it never supplies. A third capability is **assumed rather than implemented**:
-> provider-side deduplication. See
+> document names an input it never supplies. One capability is **assumed rather than implemented**:
+> provider-side deduplication. And one behaviour is **deliberately hazardous**: with severity ordering
+> enabled, low-severity deliveries can be starved without bound, and nothing signals it. All four are
+> stated in
 > [Requirements not met](docs/architecture.md#2-requirements-this-service-does-not-meet).
 > This service **must not be described as satisfying §4.3.**
 
@@ -46,13 +48,15 @@ the password without exporting anything. A deployment supplying real environment
 ```yaml
 notification:
   features:
-    dedup-submission: false   # suppress duplicate submissions at the event boundary
-    dedup-delivery: false     # send a stable idempotency key on every provider call
-    delivery-reclaim: false   # recover deliveries stranded mid-attempt
+    dedup-submission: false      # suppress duplicate submissions at the event boundary
+    dedup-delivery: false        # send a stable idempotency key on every provider call
+    delivery-reclaim: false      # recover deliveries stranded mid-attempt
+    severity-claim-order: false  # claim higher-severity deliveries first
 ```
 
-With all three off, the service behaves exactly as it did before these features existed — asserted by
-`FlagsOffBaselineTest` and `ExistingChannelsUnchangedTest`, not merely intended.
+With all four off, the service behaves exactly as it did before these features existed — asserted by
+`FlagsOffBaselineTest`, `ExistingChannelsUnchangedTest` and `ClaimOrderUnchangedTest`, not merely
+intended.
 
 The flags need a **restart** to change. Suppression is irreversible, so flipping one mid-flight would
 suppress across two states of the world with no clean boundary (ADR-016).
@@ -61,6 +65,23 @@ suppress across two states of the world with no clean boundary (ADR-016).
 is `(source system, correlation id)` and correctness rests on that pair being unique per event — a
 contract this service cannot enforce. The query to check it, and what a rollback cannot recover, are in
 [docs/migration-phase2.md](docs/migration-phase2.md).
+
+**Before enabling `severity-claim-order`, read what it permits.** `CRITICAL` notifications are claimed
+before `LOW` ones, and low-severity deliveries can then be starved **without bound** — under sustained
+high-severity traffic a `LOW` delivery may never be claimed. That is a deliberate decision, not a defect,
+and it cannot be capped: an aged `LOW` delivery sitting unclaimed is *correct*, and nothing in the system
+distinguishes it from a stalled worker. Turning the flag off is the only mitigation, and it releases the
+backlog immediately. Details and the query to inspect a starved queue are in
+[docs/migration-phase2.md](docs/migration-phase2.md).
+
+The batch size is now configurable at its existing default, because severity ordering is only observable
+when the backlog exceeds one batch:
+
+```yaml
+notification:
+  worker:
+    batch-size: 50   # below 1 is rejected at startup
+```
 
 The push channel has **no flag here**. It is switched by the routing policy's existing per-channel
 `enabled` setting, which also records *why* a channel was not selected — a second switch would create
@@ -140,6 +161,9 @@ either, because there is no new resource (ADR-021).
 | The same `correlationId` twice, flag **on** | `202` then **`200`** with `suppressed: true` | The event boundary, suppressed rather than rejected |
 | The same `correlationId` after a **failed** original | `202` — not suppressed | Suppressing against a terminally failed original would leave the caller no path to sending it at all (FR-141c) |
 | The same `clientNotificationId` twice | **Two different ids** | The client identifier is descriptive, not identifying, and is *not* the boundary (FR-008a, D9) |
+| A `LOW` then a `CRITICAL` submission with `severity-claim-order: true` and `batch-size: 1` | The **CRITICAL** one attempted first | Severity leads the claim order despite the LOW one being older (FR-201) |
+| Two `HIGH` submissions, ordering on | The **older** one first | Severity refines the age order rather than replacing it (FR-203) |
+| A steady stream of `CRITICAL` work beside one `LOW` delivery | The `LOW` one **never** claimed | Unbounded starvation, accepted by decision D-15. Set the flag to false to release it |
 | `"severity":"LOW"` with `["SMS"]` only | `202`, but **zero** deliveries | The policy gates SMS at HIGH. Check `channelOutcomes` for `POLICY_EXCLUDED` |
 | `["PUSH"]` with push `enabled: false` | `202`, zero deliveries, a recorded push outcome | Disabled is recorded with a reason, not silent |
 | Empty `recipients` and no `content` | One `400` naming **both** fields | Rejections report every offending field, not the first |
@@ -174,8 +198,8 @@ startup on purpose (ADR-014).
 ./gradlew perfTest      # measurement only, asserts nothing
 ```
 
-Docker must be running. **308 tests, 0 failures.** See [docs/testing.md](docs/testing.md) for the
-approach, the twelve defects the tests caught, and the full limitations list.
+Docker must be running. **335 tests, 0 failures** from clean. See [docs/testing.md](docs/testing.md) for
+the approach, the sixteen defects the tests caught, and the full limitations list.
 
 ## Documentation
 
@@ -188,8 +212,10 @@ approach, the twelve defects the tests caught, and the full limitations list.
 | [docs/constitution-compliance.md](docs/constitution-compliance.md) | Review evidence against every constitutional principle |
 | [core spec](specs/001-notification-management-core/spec.md) | 68 requirements, each tagged by provenance; 32-entry gap register |
 | [brownfield spec](specs/002-push-dedup-refactor/spec.md) | 49 requirements, 14 baseline facts, 27 gaps, 9 recorded decisions |
+| [severity-claim spec](specs/003-severity-claim-order/spec.md) | One ordering rule; decisions D-15 and D-16; the starvation G-64 accepts |
 | [core ADRs](specs/001-notification-management-core/research.md) | ADR-001 … ADR-015 |
-| [brownfield ADRs](specs/002-push-dedup-refactor/research.md) | ADR-016 … ADR-022 |
+| [brownfield ADRs](specs/002-push-dedup-refactor/research.md) | ADR-016 … ADR-024 |
+| [severity-claim ADRs](specs/003-severity-claim-order/research.md) | ADR-025 … ADR-030 |
 | [data-model.md](specs/001-notification-management-core/data-model.md) | Tables, invariants, state machines, rollup rule |
 | [openapi.yaml](specs/001-notification-management-core/contracts/openapi.yaml) | The authoritative API contract |
 | [constitution.md](.specify/memory/constitution.md) | The engineering rules this codebase is held to |
@@ -200,7 +226,7 @@ approach, the twelve defects the tests caught, and the full limitations list.
 src/main/java/com/notification/
 ├── api/           controllers, DTOs, validation, error handling
 ├── application/   orchestration and transaction boundaries
-├── domain/        model, routing, retry, dedup, state machines, ports — no framework imports
+├── domain/        model, routing, retry, dedup, severity rank, state machines, ports — no framework imports
 ├── persistence/   JdbcClient adapters, explicit SQL
 ├── worker/        outbox poller, delivery worker
 ├── channel/       AbstractChannelProvider + one subclass per channel

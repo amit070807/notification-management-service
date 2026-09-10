@@ -19,7 +19,7 @@ judgement to make, and it needs the numbers, not a conclusion.
 | Machine | Apple M1 Pro, macOS 26.6.2 |
 | JDK | OpenJDK 21.0.12.1 LTS |
 | Database | `postgres:16-alpine`, Testcontainers, same host |
-| Harness | `./gradlew perfTest` — `src/test/java/com/notification/performance/EnhancementCostTest.java` |
+| Harness | `./gradlew perfTest` — `EnhancementCostTest` (phase 2) and `ClaimOrderCostTest` (feature 003), both under `src/test/java/com/notification/performance/` |
 | Rows in `delivery` at measurement time | 880 |
 
 A single developer machine with the database in a local container. Latency here is dominated by
@@ -79,6 +79,56 @@ Reporting only the query-level table would have been cleaner and less honest. A 
 whether to trust the 0.3 ms figure needs to know that the obvious end-to-end check does not confirm
 it and cannot.
 
+## Feature 003: the severity-ordering join
+
+Measured `2026-09-10`, same machine and container as above, 300 samples after 50 warmup, 250 due
+deliveries in the table, flag **on** in a single Spring context.
+
+| Query | p50 | p95 |
+|---|---|---|
+| Claim as shipped — joins `notification`, sorts on the generated rank, locks and updates | 1.975 ms | 2.487 ms |
+| Join and rank expression alone, no lock and no write | 0.487 ms | 0.649 ms |
+| Bare age-only `SELECT`, no join, no lock and no write | 0.548 ms | 0.830 ms |
+
+**Read rows 2 and 3 together; do not compare row 1 against row 3.** That comparison is invalid and the
+table is arranged to make the invalidity visible rather than to hide it: row 1 takes locks and performs
+an `UPDATE … RETURNING`, and rows 2 and 3 do neither. The 1.4 ms between them is the write, which
+existed before this feature and is unchanged by it.
+
+The comparison that answers G-61 is rows 2 against 3, which differ only by the join and the rank `CASE`:
+
+- **0.487 ms with the join and rank, against 0.548 ms without either.** The join is not measurably more
+  expensive than the bare scan, and on this run it measured slightly *cheaper* — which is the noise
+  floor talking, not a speedup. The honest statement is that the join has no cost this harness can
+  resolve at this table size.
+
+Why that is unsurprising rather than suspicious: `delivery.notification_id` is a foreign key and the
+join is a primary-key lookup per candidate row, which is among the cheapest joins available. And
+baseline fact **B-06** matters here — `idx_delivery_claimable (state, next_attempt_at)` does not cover
+the `state_changed_at` sort either, so this feature inherits an already-unindexed sort rather than
+introducing one. Both queries pay that same sort.
+
+**No threshold is asserted**, for the reason stated at the top of this document and recorded twice in
+the spec: G-61 says the join-versus-denormalise choice could not be made on measured grounds because no
+source document states a target. Measuring afterwards does not retroactively create one. ADR-026 chose
+the join on scope and single-source-of-truth grounds, and these numbers neither vindicate nor undermine
+that — they establish that the decision was not paid for in latency at this scale.
+
+**What is not measured**: behaviour at a table size where the unindexed sort dominates. Nothing here
+says how either query behaves with a million due deliveries, and no source document states a volume to
+test against (phase-1 G-11).
+
+### Reproducing
+
+```bash
+./gradlew perfTest --tests 'com.notification.performance.ClaimOrderCostTest'
+```
+
+Both queries are issued **in the same Spring context against the same rows**, deliberately. The
+end-to-end table above shows what happens when a comparison spans two contexts: it produced the
+impossible result that enabling a feature made it faster. Measuring this feature differently was the
+lesson that table taught.
+
 ## Cost that is not latency
 
 | Enhancement | Ongoing cost |
@@ -90,6 +140,8 @@ it and cannot.
 | Idempotency key | One SHA-256 per attempt over four short values. No storage, no query. |
 | Push channel | One more delivery row per recipient when the routing policy selects it, identical in cost to an existing channel. |
 | Retry audit | One additional audit row per retry execution. |
+| Severity claim order | One primary-key join per candidate row in the claim, plus a `CASE` over four branches. No measurable latency cost at 250 due deliveries; no index added, and none removed. |
+| Severity claim order | **Negative** cost in one direction and unbounded in another: a `CRITICAL` notification is delivered sooner, and a `LOW` one may never be delivered at all. That is decision D-15, not a performance property, and no measurement expresses it. |
 
 ## Reproducing
 
