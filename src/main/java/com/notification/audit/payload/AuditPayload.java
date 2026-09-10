@@ -25,7 +25,10 @@ public sealed interface AuditPayload
                 AuditPayload.DeliveryFailed,
                 AuditPayload.RetryScheduled,
                 AuditPayload.DeliveryExpired,
-                AuditPayload.RetryBudgetExhausted {
+                AuditPayload.RetryBudgetExhausted,
+                AuditPayload.NotificationSuppressed,
+                AuditPayload.RetryExecuted,
+                AuditPayload.DeliveryReclaimed {
 
     /** Flattened for storage. Implementations must emit only non-sensitive, allowlisted fields. */
     Map<String, String> fields();
@@ -150,6 +153,68 @@ public sealed interface AuditPayload
                     "channel", channel,
                     "attemptsMade", String.valueOf(attemptsMade),
                     "lastClassification", lastClassification);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Feature 002.
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * A submission suppressed as a duplicate (FR-143).
+     *
+     * <p>Carries the deduplication key components and the original notification, so a reader can
+     * answer both "why was this suppressed" and "what was it a duplicate of". No content and no
+     * recipient reference: a suppressed submission never became a notification, and the caller who
+     * needs the detail already has it.
+     */
+    record NotificationSuppressed(String clientNotificationId, String sourceSystem,
+            String correlationId, String originalNotificationId) implements AuditPayload {
+        @Override
+        public Map<String, String> fields() {
+            return Map.of(
+                    "clientNotificationId", clientNotificationId,
+                    "sourceSystem", sourceSystem,
+                    "correlationId", correlationId,
+                    "originalNotificationId", originalNotificationId);
+        }
+    }
+
+    /**
+     * A scheduled retry actually running (FR-150).
+     *
+     * <p>{@code scheduledRef} is the load-bearing field. Both a scheduling record and an attempt
+     * record already existed, but nothing tied an execution to the scheduling that caused it, so
+     * across several retries a reader could not pair them (FR-150a).
+     */
+    record RetryExecuted(String deliveryId, String channel, int attemptNumber, String scheduledRef,
+            String scheduledFor) implements AuditPayload {
+        @Override
+        public Map<String, String> fields() {
+            return Map.of(
+                    "deliveryId", deliveryId,
+                    "channel", channel,
+                    "attemptNumber", String.valueOf(attemptNumber),
+                    "scheduledRef", scheduledRef,
+                    "scheduledFor", scheduledFor);
+        }
+    }
+
+    /**
+     * A delivery stranded mid-attempt, recovered once its lease expired (FR-159).
+     *
+     * <p>Records the attempts already made, because a reclaim does not reset the budget (FR-159a) and
+     * an operator reading the history needs to see that it did not.
+     */
+    record DeliveryReclaimed(String deliveryId, String channel, int attemptsMade,
+            String leaseExpiredAt) implements AuditPayload {
+        @Override
+        public Map<String, String> fields() {
+            return Map.of(
+                    "deliveryId", deliveryId,
+                    "channel", channel,
+                    "attemptsMade", String.valueOf(attemptsMade),
+                    "leaseExpiredAt", leaseExpiredAt);
         }
     }
 }

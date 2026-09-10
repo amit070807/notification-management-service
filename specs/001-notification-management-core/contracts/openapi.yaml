@@ -92,8 +92,15 @@ components:
 
     Channel:
       type: string
-      description: Closed set (ADR-005).
-      enum: [EMAIL, SMS]
+      description: |
+        Closed set (ADR-005), extended with PUSH by feature 002 (FR-110).
+        Adding an enum value is additive within a major version per constitution
+        Principle I, which names removal and narrowing as the breaking changes.
+        Residual risk (feature 002 G-46): a consumer validating against a closed
+        enum can still reject an unrecognised value. PUSH ships disabled in
+        routing-policy.yaml (ADR-017), so the value exists in the contract before
+        any response can carry it.
+      enum: [EMAIL, SMS, PUSH]
 
     Severity:
       type: string

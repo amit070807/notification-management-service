@@ -18,5 +18,17 @@ public enum AuditEventType {
     DELIVERY_FAILED,
     RETRY_SCHEDULED,
     DELIVERY_EXPIRED,
-    RETRY_BUDGET_EXHAUSTED
+    RETRY_BUDGET_EXHAUSTED,
+
+    // Added by feature 002.
+    /** A submission suppressed as a duplicate (FR-143). Suppression must never be silent. */
+    NOTIFICATION_SUPPRESSED,
+    /**
+     * A scheduled retry actually running (FR-150). Distinct from RETRY_SCHEDULED, which is only the
+     * decision to try again; without both, a reader cannot tell a retry that ran from one that was
+     * merely planned.
+     */
+    RETRY_EXECUTED,
+    /** A delivery stranded mid-attempt, recovered once its lease expired (FR-159). */
+    DELIVERY_RECLAIMED
 }

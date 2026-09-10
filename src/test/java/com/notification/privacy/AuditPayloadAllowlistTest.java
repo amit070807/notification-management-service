@@ -22,7 +22,8 @@ class AuditPayloadAllowlistTest {
         // carries it, so no code path can add it. An open interface or a free-form map would let
         // any caller put anything in an audit record.
         assertThat(AuditPayload.class.isSealed()).isTrue();
-        assertThat(AuditPayload.class.getPermittedSubclasses()).hasSize(10);
+        // 13 after feature 002 added NotificationSuppressed, RetryExecuted and DeliveryReclaimed.
+        assertThat(AuditPayload.class.getPermittedSubclasses()).hasSize(13);
     }
 
     @Test
