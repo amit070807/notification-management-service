@@ -24,17 +24,25 @@ Motivating requirement and evidence:
   them "to a later deliverable" - feature 002 is that deliverable, so the deferral is being
   honoured on its own terms rather than overridden.
 
-  Evidence of need beyond the document (corrected 2026-09-09 after inspecting the code):
-  baseline fact B-13 records that a delivery orphaned by a worker or provider crash is
-  STRANDED in IN_PROGRESS permanently - claimDue claims only QUEUED and RETRY_SCHEDULED, and
-  nothing sweeps stale leases. The notification then reports IN_PROGRESS indefinitely for work
-  that will never complete.
+  Evidence of need beyond the document (corrected twice; this version verified by running the
+  code rather than reading it):
+  baseline fact B-13 records that the entire attempt - the IN_PROGRESS write, the attempt row,
+  the provider call and the outcome - is ONE transaction. A crash rolls all of it back, so the
+  delivery returns to QUEUED and is retried as though nothing happened, while the provider may
+  already have sent. The database can be rolled back; the notification cannot. Audit therefore
+  under-reports the attempt (FR-043) and the recipient can be messaged twice.
 
-  An earlier draft of this record described that as a double-send. It is not: a stranded row
-  is never re-claimed, so no duplicate occurs today. The two are nonetheless coupled, and that
-  coupling is the real argument for this amendment - reclaiming stranded deliveries is
-  necessary, and reclaiming them is precisely what creates the duplicate-send exposure. The
-  key required by the rules below is what makes that fix safe.
+  Two earlier drafts of this record were wrong: first that a lease expiring mid-attempt caused
+  a double-send, then that deliveries were stranded in IN_PROGRESS. Neither occurs, because a
+  rolled-back attempt commits nothing. Both errors came from reading claimDue without running
+  it.
+
+  The correct argument is narrower and stronger. Recoverability is not about repairing an
+  existing stranding bug; it is what makes it SAFE to move the provider call out of the
+  transaction, which must happen because a real provider is an external API and holding a
+  database connection across it is untenable. Once the call is outside, a crash genuinely
+  leaves work in flight - and the key required below is what lets the provider recognise the
+  repeat.
 
 Impact on existing code and tests:
   - Delivered code becomes NON-COMPLIANT on two counts: no provider call carries a stable
