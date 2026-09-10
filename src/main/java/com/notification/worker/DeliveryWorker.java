@@ -23,17 +23,24 @@ import org.springframework.stereotype.Component;
 public class DeliveryWorker {
 
     private static final Duration LEASE = Duration.ofMinutes(1);
-    private static final int BATCH = 50;
 
     private final DeliveryRepositoryPort deliveries;
     private final DeliveryProcessingService processing;
     private final ClockPort clock;
+    private final int batchSize;
 
     public DeliveryWorker(
-            DeliveryRepositoryPort deliveries, DeliveryProcessingService processing, ClockPort clock) {
+            DeliveryRepositoryPort deliveries,
+            DeliveryProcessingService processing,
+            ClockPort clock,
+            com.notification.config.WorkerProperties properties) {
         this.deliveries = deliveries;
         this.processing = processing;
         this.clock = clock;
+        // ADR-030. Resolved once at construction rather than read per run, so a run cannot observe a
+        // batch size mid-change and so the startup validation in WorkerProperties is what fails on a
+        // bad value.
+        this.batchSize = properties.batchSize();
     }
 
     @Scheduled(fixedDelayString = "${notification.worker.poll-interval-ms:1000}")
@@ -42,7 +49,7 @@ public class DeliveryWorker {
     }
 
     public int runOnce() {
-        List<Delivery> due = deliveries.claimDue(clock.now(), clock.now().plus(LEASE), BATCH);
+        List<Delivery> due = deliveries.claimDue(clock.now(), clock.now().plus(LEASE), batchSize);
         for (Delivery delivery : due) {
             processing.process(delivery);
         }

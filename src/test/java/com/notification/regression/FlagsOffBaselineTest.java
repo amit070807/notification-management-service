@@ -57,13 +57,30 @@ class FlagsOffBaselineTest {
     }
 
     @Test
-    void anUnsetFlagResolvesToOffRatherThanNull() {
+    void anUnsetFlagResolvesToOffRatherThanNull() throws Exception {
         // If a property is absent the record must still answer "off". A null Boolean would make
         // "off" depend on whether binding happened, which is not a default at all.
-        FeatureFlags unset = new FeatureFlags(null, null, null);
+        //
+        // Built reflectively rather than by naming each component. An earlier version passed one null
+        // per known flag, so adding a flag broke this test on arity — which reads as a failure to fix
+        // rather than as a reminder, and invites fixing it by adding a null without thinking about
+        // whether the new flag actually defaults off.
+        RecordComponent[] components = FeatureFlags.class.getRecordComponents();
+        Object[] allNull = new Object[components.length];
+        FeatureFlags unset =
+                (FeatureFlags)
+                        FeatureFlags.class
+                                .getDeclaredConstructors()[0]
+                                .newInstance(allNull);
 
-        assertThat(List.of(unset.dedupSubmission(), unset.dedupDelivery(), unset.deliveryReclaim()))
+        List<Object> resolved = new java.util.ArrayList<>();
+        for (RecordComponent component : components) {
+            resolved.add(component.getAccessor().invoke(unset));
+        }
+
+        assertThat(resolved)
                 .as("an entirely unset FeatureFlags must be all-off, not all-null")
+                .isNotEmpty()
                 .containsOnly(false);
         assertThat(unset).isEqualTo(FeatureFlags.allOff());
     }

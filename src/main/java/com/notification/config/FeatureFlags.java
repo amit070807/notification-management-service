@@ -25,19 +25,26 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param dedupSubmission suppress duplicate submissions at the boundary (FR-140)
  * @param dedupDelivery send a stable idempotency key on every provider call (FR-161)
  * @param deliveryReclaim recover deliveries stranded mid-attempt (FR-159)
+ * @param severityClaimOrder claim higher-severity deliveries first (feature 003 FR-206). The only
+ *     mitigation for the unbounded starvation D-15 accepted, which is why it is a flag and not a
+ *     constant
  */
 @ConfigurationProperties(prefix = "notification.features")
 public record FeatureFlags(
-        Boolean dedupSubmission, Boolean dedupDelivery, Boolean deliveryReclaim) {
+        Boolean dedupSubmission,
+        Boolean dedupDelivery,
+        Boolean deliveryReclaim,
+        Boolean severityClaimOrder) {
 
     public FeatureFlags {
         dedupSubmission = dedupSubmission != null && dedupSubmission;
         dedupDelivery = dedupDelivery != null && dedupDelivery;
         deliveryReclaim = deliveryReclaim != null && deliveryReclaim;
+        severityClaimOrder = severityClaimOrder != null && severityClaimOrder;
     }
 
     /** All flags off — the phase-1 baseline. */
     public static FeatureFlags allOff() {
-        return new FeatureFlags(false, false, false);
+        return new FeatureFlags(false, false, false, false);
     }
 }

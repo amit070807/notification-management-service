@@ -62,6 +62,19 @@ notification:
     dedup-submission: false
     dedup-delivery: false
     delivery-reclaim: false
+    # Feature 003 FR-206. Claims higher-severity deliveries before lower ones.
+    #
+    # Rollback is symmetric here — turning it off restores the age-only claim order and releases any
+    # starved backlog — and that matters more than usual, because it is the ONLY mitigation for the
+    # starvation this feature deliberately permits. Decision D-15 accepted UNBOUNDED starvation of low
+    # severity: under a sustained stream of higher-severity traffic a LOW delivery may remain eligible
+    # and unclaimed indefinitely, and FR-207 forbids adding an age override to cap it.
+    #
+    # So an aged LOW delivery sitting unclaimed while high-severity work flows is CORRECT, not a
+    # stalled worker. Nothing in the system distinguishes the two (spec 003 G-64): claim order is
+    # invisible in the API and no starvation metric is in scope. If a LOW backlog must drain, set this
+    # to false.
+    severity-claim-order: false
 
   # T003 — deduplication boundary window (spec D14, FR-141b).
   # 24 hours is an engineering assumption, not a source requirement: neither requirements document
@@ -75,6 +88,11 @@ notification:
 
   worker:
     poll-interval-ms: 1000
+    # Feature 003 ADR-030. Unchanged from the constant it replaces, so no deployment behaviour moves;
+    # it exists because severity ordering is only observable past one batch, and a test that had to
+    # build a 51-delivery backlog would be asserting the batch boundary rather than the ordering.
+    # Below 1 the worker claims nothing and stalls silently, so it is rejected at startup.
+    batch-size: 50
     # T048 (feature 002 G-58). MUST stay ABOVE notification.channel.read-timeout.
     #
     # Reclaiming IN_PROGRESS deliveries (FR-159) means a delivery whose provider call is merely SLOW —
