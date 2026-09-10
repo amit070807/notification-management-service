@@ -114,6 +114,25 @@ public class JdbcDeliveryRepository implements DeliveryRepositoryPort {
     }
 
     @Override
+    public void updateKeepingLease(Delivery d) {
+        // Identical to update() except that claimed_until is left alone. The attempt is still
+        // running; the lease is what says so, and what lets a crash be recognised later.
+        jdbc.sql(
+                        """
+                        UPDATE delivery SET state = ?, attempt_count = ?, next_attempt_at = ?,
+                            last_failure_classification = ?, state_changed_at = ?
+                        WHERE id = ?
+                        """)
+                .param(d.state().name())
+                .param(d.attemptCount())
+                .param(d.nextAttemptAt() == null ? null : Timestamp.from(d.nextAttemptAt()))
+                .param(d.lastFailureClassification() == null ? null : d.lastFailureClassification().name())
+                .param(Timestamp.from(d.stateChangedAt()))
+                .param(d.id())
+                .update();
+    }
+
+    @Override
     public void update(Delivery d) {
         jdbc.sql(
                         """

@@ -44,8 +44,29 @@ public final class ScriptedChannelProvider implements ChannelProviderPort {
      */
     private final List<IdempotencyKey> keys = new CopyOnWriteArrayList<>();
 
+    /**
+     * Makes the next call throw instead of returning an outcome.
+     *
+     * <p>This is how a real crash is simulated once the provider call sits outside a transaction: the
+     * call happens, whatever it did on the provider side stands, and this process dies before it can
+     * record the result. Returning a failed outcome would test the ordinary failure path instead,
+     * which is a different thing entirely.
+     */
+    public ScriptedChannelProvider thenThrow() {
+        throwOnNextCall.set(true);
+        return this;
+    }
+
+    private final java.util.concurrent.atomic.AtomicBoolean throwOnNextCall =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     @Override
     public DeliveryOutcome send(RecipientRef recipient, ContentRef content, IdempotencyKey key) {
+        if (throwOnNextCall.getAndSet(false)) {
+            calls.add(recipient);
+            keys.add(key);
+            throw new IllegalStateException("simulated provider/worker crash after the call was made");
+        }
         calls.add(recipient);
         keys.add(key);
         DeliveryOutcome next = script.poll();

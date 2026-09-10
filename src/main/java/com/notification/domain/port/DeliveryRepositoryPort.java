@@ -21,4 +21,18 @@ public interface DeliveryRepositoryPort {
     List<Delivery> claimDue(Instant now, Instant leaseUntil, int limit);
 
     void update(Delivery delivery);
+
+    /**
+     * Persists a delivery while <b>keeping</b> its worker lease.
+     *
+     * <p>{@link #update} clears the lease, which is right for every transition that ends an attempt:
+     * the work is finished and the row should be claimable again. It is wrong for the move into
+     * {@code IN_PROGRESS}, because the attempt is still running and the lease is the only thing
+     * marking it as owned.
+     *
+     * <p>Clearing it there had two consequences. A concurrent worker could see an unleased row, and —
+     * more damagingly — a delivery orphaned mid-attempt could never be recognised as stranded, since
+     * recovery keys on an <i>expired</i> lease and a null one never expires.
+     */
+    void updateKeepingLease(Delivery delivery);
 }

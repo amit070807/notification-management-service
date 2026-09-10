@@ -46,6 +46,7 @@ public class DeliveryProcessingService {
     private final RetryPolicySelector retryPolicies;
     private final RandomPort random;
     private final NotificationMetrics metrics;
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
 
     public DeliveryProcessingService(
             DeliveryRepositoryPort deliveries,
@@ -57,7 +58,8 @@ public class DeliveryProcessingService {
             JdbcClient jdbc,
             RetryPolicySelector retryPolicies,
             RandomPort random,
-            NotificationMetrics metrics) {
+            NotificationMetrics metrics,
+            org.springframework.transaction.PlatformTransactionManager transactionManager) {
         this.deliveries = deliveries;
         this.notifications = notifications;
         this.providers =
@@ -69,14 +71,69 @@ public class DeliveryProcessingService {
         this.retryPolicies = retryPolicies;
         this.random = random;
         this.metrics = metrics;
+        // Programmatic rather than @Transactional: the boundaries are the substance of this class,
+        // and a proxy annotation would also be silently bypassed by self-invocation.
+        this.transactions =
+                new org.springframework.transaction.support.TransactionTemplate(transactionManager);
     }
 
-    @Transactional
+    /**
+     * What tx1 produced and the provider call needs. {@code null} means tx1 settled the delivery on
+     * its own — expired, not yet due, undeliverable — and there is nothing to send.
+     */
+    private record StartedAttempt(
+            Delivery inProgress,
+            Notification notification,
+            UUID attemptId,
+            int attemptNumber,
+            IdempotencyKey key) {}
+
+    /**
+     * Drives one delivery across <b>three</b> phases. The boundaries between them are the point.
+     *
+     * <pre>
+     *   tx1  beginAttempt    IN_PROGRESS + attempt row, lease preserved   -- commit --
+     *        provider.send                     no transaction, no connection held
+     *   tx2  recordOutcome   attempt row + final state + audit
+     * </pre>
+     *
+     * <p>All three used to be one transaction. That is wrong once the provider is a real external API
+     * rather than a simulation, for two independent reasons.
+     *
+     * <p>It held a database connection for the duration of a network call. With a ten-second read
+     * timeout and a modest pool, a slow provider exhausts the pool and blocks work unrelated to it.
+     *
+     * <p>And it offered false comfort. A crash rolled the attempt row back with everything else, so the
+     * system retried as though nothing had happened — but the provider had already sent. The database
+     * can be rolled back; the notification cannot. Splitting the transaction does not create that
+     * exposure, it stops concealing it: the attempt row now survives, the delivery is recognisably
+     * stranded, and the idempotency key gives the provider what it needs to recognise the repeat
+     * (spec D12).
+     */
     public void process(Delivery delivery) {
+        StartedAttempt started = transactions.execute(status -> beginAttempt(delivery));
+        if (started == null) {
+            return;
+        }
+
+        // Deliberately outside any transaction. If this throws or the process dies here, tx1 stands:
+        // the delivery is IN_PROGRESS with a lease that will expire and be reclaimed.
+        DeliveryOutcome outcome =
+                providers
+                        .get(started.inProgress().channel())
+                        .send(
+                                started.inProgress().recipientRef(),
+                                started.notification().content(),
+                                started.key());
+
+        transactions.executeWithoutResult(status -> recordOutcome(started, outcome));
+    }
+
+    private StartedAttempt beginAttempt(Delivery delivery) {
         Instant now = clock.now();
         Optional<Notification> maybe = notifications.findById(delivery.notificationId());
         if (maybe.isEmpty()) {
-            return;
+            return null;
         }
         Notification notification = maybe.get();
 
@@ -99,12 +156,12 @@ public class DeliveryProcessingService {
         // backoff, so evaluating once would violate FR-032.
         if (notification.isExpiredAt(now)) {
             expire(delivery, notification, now);
-            return;
+            return null;
         }
         if (!notification.isReleasedAt(now)) {
             // Not yet due. Release the lease and leave it QUEUED (FR-031).
             release(delivery);
-            return;
+            return null;
         }
 
         // T080 — an attempt on a channel absent from the recorded routing decision is forbidden
@@ -112,13 +169,13 @@ public class DeliveryProcessingService {
         // defence-in-depth check against a row arriving by another path.
         if (!isChannelInRecordedDecision(delivery)) {
             transition(delivery, DeliveryState.UNDELIVERABLE, now, null, 0);
-            return;
+            return null;
         }
 
-        attempt(delivery, notification, now);
+        return attempt(delivery, notification, now);
     }
 
-    private void attempt(Delivery delivery, Notification notification, Instant now) {
+    private StartedAttempt attempt(Delivery delivery, Notification notification, Instant now) {
         int attemptNumber = delivery.attemptCount() + 1;
 
         // T063/FR-150 — an attempt that a retry scheduled is recorded as such, BEFORE the state
@@ -133,7 +190,11 @@ public class DeliveryProcessingService {
         // The local object goes stale the moment we transition, so carry the live state forward.
         // Without this, the second transition would be checked from QUEUED rather than
         // IN_PROGRESS and the state machine would correctly reject it as illegal.
-        Delivery inProgress = transition(delivery, DeliveryState.IN_PROGRESS, now, null, delivery.attemptCount());
+        // Keeps the lease. The attempt runs outside any transaction from here, and the lease is both
+        // what marks the row as owned and what lets a crash be recognised once it expires.
+        Delivery inProgress =
+                transitionKeepingLease(delivery, DeliveryState.IN_PROGRESS, now, null, delivery.attemptCount());
+
         if (isScheduledRetry) {
             audit.record(
                     notification.id(),
@@ -190,10 +251,6 @@ public class DeliveryProcessingService {
                         .query(UUID.class)
                         .single();
 
-        DeliveryOutcome outcome =
-                providers
-                        .get(delivery.channel())
-                        .send(delivery.recipientRef(), notification.content());
         // T044/FR-161. Derived here, immediately before the call, from data already written: the
         // delivery row at acceptance and the attempt row just above. That is what makes it
         // reproducible after a crash between this call and the outcome write — the exact window the
@@ -202,7 +259,22 @@ public class DeliveryProcessingService {
                 IdempotencyKey.of(
                         delivery.notificationId(), delivery.recipientId(), delivery.channel(), attemptNumber);
 
+        return new StartedAttempt(inProgress, notification, attemptId, attemptNumber, key);
+    }
+
+    /**
+     * tx2 — records what the provider said.
+     *
+     * <p>Its own transaction, so the call above holds no database connection. If this never runs, the
+     * delivery stays IN_PROGRESS with an expiring lease and is reclaimed later; the attempt row
+     * committed in tx1 is what stops audit pretending the attempt never happened (FR-043).
+     */
+    private void recordOutcome(StartedAttempt started, DeliveryOutcome outcome) {
+        Delivery inProgress = started.inProgress();
+        Notification notification = started.notification();
+        int attemptNumber = started.attemptNumber();
         Instant finished = clock.now();
+
         jdbc.sql(
                         "UPDATE delivery_attempt SET finished_at = ?, outcome = ?, failure_classification = ?, "
                                 + "diagnostic = ? WHERE id = ?")
@@ -210,7 +282,7 @@ public class DeliveryProcessingService {
                 .param(outcome.success() ? "SUCCESS" : "FAILURE")
                 .param(outcome.classification() == null ? null : outcome.classification().name())
                 .param(outcome.diagnostic())
-                .param(attemptId)
+                .param(started.attemptId())
                 .update();
 
         if (outcome.success()) {
@@ -220,9 +292,9 @@ public class DeliveryProcessingService {
                     notification.correlationId(),
                     AuditEventType.DELIVERY_SUCCEEDED,
                     new AuditPayload.DeliverySucceeded(
-                            delivery.id().toString(),
-                            Masking.mask(delivery.recipientRef().value()),
-                            delivery.channel().name(),
+                            inProgress.id().toString(),
+                            Masking.mask(inProgress.recipientRef().value()),
+                            inProgress.channel().name(),
                             attemptNumber));
         } else {
             handleFailure(inProgress, notification, outcome, attemptNumber, finished);
@@ -404,6 +476,32 @@ public class DeliveryProcessingService {
 
     private void release(Delivery delivery) {
         jdbc.sql("UPDATE delivery SET claimed_until = NULL WHERE id = ?").param(delivery.id()).update();
+    }
+
+    /**
+     * As {@link #transition}, but keeps the worker lease.
+     *
+     * <p>Used only for the move into {@code IN_PROGRESS}. Every other transition ends an attempt and
+     * should release the row; this one begins work that continues outside the transaction, so the lease
+     * must stand.
+     */
+    private Delivery transitionKeepingLease(
+            Delivery delivery, DeliveryState target, Instant at, FailureClassification classification, int attempts) {
+        delivery.state().checkTransitionTo(target);
+        Delivery updated =
+                new Delivery(
+                        delivery.id(),
+                        delivery.notificationId(),
+                        delivery.recipientId(),
+                        delivery.recipientRef(),
+                        delivery.channel(),
+                        target,
+                        attempts,
+                        null,
+                        classification,
+                        at);
+        deliveries.updateKeepingLease(updated);
+        return updated;
     }
 
     /** @return the delivery in its new state, so callers do not act on a stale snapshot. */
