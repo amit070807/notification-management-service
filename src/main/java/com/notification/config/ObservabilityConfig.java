@@ -49,6 +49,15 @@ public class ObservabilityConfig {
     }
 
     /**
+     * Per-channel retry resolution (FR-132). Eager, so an override above the allowed bound fails
+     * startup rather than surfacing during a delivery.
+     */
+    @Bean
+    public RetryPolicySelector retryPolicySelector(RetryProperties properties) {
+        return new RetryPolicySelector(properties);
+    }
+
+    /**
      * Counters required by the constitution's Observability section.
      *
      * <p>Note what is deliberately absent from the tag sets: no recipient reference, no content,

@@ -78,6 +78,71 @@ class ChannelExtensibilityTest {
     }
 
     @Test
+    void aFixtureChannelWithItsOwnErrorVocabularyNeedsOnlyTheBaseTypeAndAMap() {
+        // T030 / FR-130. The claim under test is that adding a channel is two declarations, not a
+        // change to the pipeline. A fixture channel is used rather than shipping a fourth real one,
+        // because shipping a channel nobody asked for to prove a point would be its own YAGNI
+        // violation.
+        var fixture =
+                new com.notification.channel.AbstractChannelProvider(
+                        com.notification.domain.model.Channel.EMAIL,
+                        java.time.Duration.ofSeconds(1),
+                        java.time.Duration.ofSeconds(2)) {
+                    @Override
+                    protected java.util.Map<String, com.notification.domain.retry.FailureClassification>
+                            errorCodeMap() {
+                        return java.util.Map.of(
+                                "FIXTURE_GONE",
+                                com.notification.domain.retry.FailureClassification.INVALID_RECIPIENT,
+                                "FIXTURE_BUSY",
+                                com.notification.domain.retry.FailureClassification.TRANSIENT_PROVIDER_FAILURE);
+                    }
+
+                    @Override
+                    protected String providerCall(
+                            com.notification.domain.model.RecipientRef recipient,
+                            com.notification.domain.model.ContentRef content,
+                            com.notification.domain.model.IdempotencyKey key) {
+                        return "FIXTURE_BUSY";
+                    }
+                };
+
+        var outcome =
+                fixture.send(
+                        new com.notification.domain.model.RecipientRef("r"),
+                        new com.notification.domain.model.ContentRef(
+                                java.util.UUID.randomUUID(), "sha256:abc", 3),
+                        com.notification.domain.model.IdempotencyKey.of(
+                                java.util.UUID.randomUUID(),
+                                java.util.UUID.randomUUID(),
+                                com.notification.domain.model.Channel.EMAIL,
+                                1));
+
+        // Classified through the shared taxonomy, with no routing, retry, state or audit change.
+        assertThat(outcome.classification())
+                .isEqualTo(com.notification.domain.retry.FailureClassification.TRANSIENT_PROVIDER_FAILURE);
+        assertThat(outcome.diagnostic()).isNotEqualTo("REDACTED_UNSAFE_DIAGNOSTIC");
+    }
+
+    @Test
+    void everyShippedAdapterExtendsTheSharedBaseSoTheMappingRuleCannotBeBypassed() {
+        // An adapter implementing ChannelProviderPort directly could return an unmapped
+        // classification and defeat FR-131. This asserts none does.
+        var directImplementors =
+                classes.stream()
+                        .filter(c -> c.getPackageName().startsWith("com.notification.channel"))
+                        .filter(c -> c.isAssignableTo(com.notification.domain.port.ChannelProviderPort.class))
+                        .filter(c -> !c.getModifiers().contains(com.tngtech.archunit.core.domain.JavaModifier.ABSTRACT))
+                        .filter(c -> !c.isAssignableTo(com.notification.channel.AbstractChannelProvider.class))
+                        .map(c -> c.getName())
+                        .toList();
+
+        assertThat(directImplementors)
+                .as("shipped adapters must extend AbstractChannelProvider so error mapping is enforced")
+                .isEmpty();
+    }
+
+    @Test
     void deliveryLogicDependsOnThePortNotOnAnyAdapter() {
         noClasses()
                 .that()

@@ -158,6 +158,42 @@ arrives unannounced.
 
 ---
 
+## ADR-022: US2 is real work — resolves U-9
+
+**Context**: G-57 observed that after D10 removed graceful degradation, and given `ChannelProviderPort`
+already existed, Option 3's remaining scope might be satisfied as a by-product of US1. U-9 deferred
+the answer until push had shown how much divergence it actually introduced. T027 is that decision.
+
+**Evidence gathered after US1 landed**:
+
+- The two adapters are 89 and 107 lines and carry ~19 hits each of the *same* concerns: timeout
+  fields, call counting, fail-first-N logic, outcome construction. Before push there was one adapter
+  shape and nothing to extract; there are now two copies of it.
+- `ChannelConfig` gained `if (channel == Channel.PUSH)`. It is in `config/`, which the extensibility
+  test legitimately exempts, so no rule was broken — but a fourth channel adds a fourth branch, and
+  the wiring becomes a place where channel knowledge accumulates.
+- Nothing leaked into `routing`, `retry`, `state` or `audit`. The Principle VII boundary held.
+
+**Decision**: US2 proceeds, scoped to what is genuinely outstanding:
+
+1. Extract the shared adapter behaviour push duplicated into a base type (FR-130).
+2. Remove the channel branch from wiring, so adapters declare their own channel rather than the
+   configuration deciding for them.
+3. Per-channel retry selection, which is what "handling" rate limiting substantively means (FR-132,
+   ADR-018).
+
+**What US2 does not include**: extracting the interface, which phase 1 already did, and graceful
+degradation, which D10 scoped out. Recording that keeps the phase honest about its size — a reader
+comparing Option 3's bullet list against this codebase should be able to see which bullets were
+already satisfied and which this phase addresses.
+
+**Why the sequencing was right**: had US2 run first, the abstraction would have been extracted from a
+single example. The duplication it removes did not exist until push created it.
+
+**Serves**: FR-130, FR-131, FR-132; spec G-57; Principle VII.
+
+---
+
 ## Resolved by inheritance
 
 These were decided in phase 1 and are **not** revisited. Listed so their absence here is legible as
@@ -177,7 +213,7 @@ a decision rather than an oversight.
 
 | ID | Open decision | Why it is not being assumed |
 |----|---------------|------------------------------|
-| **U-9** | Whether US2 survives as a separate story (G-57) | Answerable only after US1 shows how much divergence push actually introduces |
+| **U-9** | ~~Whether US2 survives as a separate story (G-57)~~ | **Resolved by ADR-022**: US2 is real work. `AbstractChannelProvider` removed duplicated taxonomy mapping and diagnostic sanitising from three adapters, and made the fail-closed behaviour on an unmapped error code exist in one place instead of three |
 
 ## Deliberately not researched
 

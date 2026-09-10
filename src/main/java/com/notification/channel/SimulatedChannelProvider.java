@@ -2,88 +2,76 @@ package com.notification.channel;
 
 import com.notification.domain.model.Channel;
 import com.notification.domain.model.ContentRef;
+import com.notification.domain.model.IdempotencyKey;
 import com.notification.domain.model.RecipientRef;
-import com.notification.domain.port.ChannelProviderPort;
-import com.notification.domain.port.DeliveryOutcome;
 import com.notification.domain.retry.FailureClassification;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * T074 (ADR-015, resolving U-5) — a channel provider whose behaviour comes from configuration.
+ * A channel provider whose behaviour comes from configuration (ADR-015).
  *
- * <p>Spec G-22: the source never states that real providers are available, so the prototype
+ * <p>Spec G-22: no source document states that a real provider is available, so the prototype
  * simulates them. This is a declared limitation under DO-004 — no integration with a real provider
  * is proven.
  *
- * <p>Behaviour is configured rather than carried in the request. A per-request directive would
- * have put a test affordance in the production contract and made the simulator an injection
- * surface for anyone able to submit.
+ * <p>Behaviour is configured rather than carried in the request. A per-request directive would have
+ * put a test affordance in the production contract and made the simulator an injection surface for
+ * anyone able to submit.
  *
- * <p>Two things this class does that a real adapter must also do:
- *
- * <ul>
- *   <li>Map every outcome into the closed taxonomy. There is no pass-through path (FR-037).
- *   <li>Return a short, sanitised diagnostic — never a provider response body, which may echo the
- *       submitted content straight into audit (Principle V).
- * </ul>
+ * <p>US2 (ADR-022) moved the shared work — timeouts, failing closed on an unmapped code, keeping the
+ * diagnostic code-shaped — into {@link AbstractChannelProvider}. What is left here is the two things
+ * only this adapter knows: how to call its provider, and what its provider's codes mean.
  */
-public class SimulatedChannelProvider implements ChannelProviderPort {
+public class SimulatedChannelProvider extends AbstractChannelProvider {
 
-    private final Channel channel;
+    /** Every classification maps to itself. Built once — it never varies per instance. */
+    private static final Map<String, FailureClassification> IDENTITY_CODES =
+            Arrays.stream(FailureClassification.values())
+                    .collect(Collectors.toUnmodifiableMap(Enum::name, c -> c));
+
     private final FailureClassification simulatedFailure;
     private final int failFirstAttempts;
-    private final java.time.Duration connectTimeout;
-    private final java.time.Duration readTimeout;
-    private final java.util.concurrent.atomic.AtomicInteger callCount =
-            new java.util.concurrent.atomic.AtomicInteger();
+    private final AtomicInteger callCount = new AtomicInteger();
 
     /**
      * @param simulatedFailure null means always succeed
-     * @param failFirstAttempts fail only the first N calls, then succeed; 0 means always fail when
-     *     a classification is configured. Lets a demo show retry-then-success without code changes.
+     * @param failFirstAttempts fail only the first N calls, then succeed; 0 means always fail while a
+     *     classification is configured. Lets a demo show retry-then-success without a code change.
      */
     public SimulatedChannelProvider(
             Channel channel,
             FailureClassification simulatedFailure,
             int failFirstAttempts,
-            java.time.Duration connectTimeout,
-            java.time.Duration readTimeout) {
-        this.channel = channel;
+            Duration connectTimeout,
+            Duration readTimeout) {
+        super(channel, connectTimeout, readTimeout);
         this.simulatedFailure = simulatedFailure;
         this.failFirstAttempts = failFirstAttempts;
-        // T094: the constitution requires every outbound provider call to be bounded. A real
-        // adapter applies these to its HTTP client; a simulated one carries them so the contract
-        // a real adapter must honour is visible here rather than discovered later. Without a
-        // timeout the TIMEOUT classification of source 4.5 could never be produced at all.
-        this.connectTimeout = connectTimeout == null ? java.time.Duration.ofSeconds(5) : connectTimeout;
-        this.readTimeout = readTimeout == null ? java.time.Duration.ofSeconds(10) : readTimeout;
     }
 
-    public java.time.Duration connectTimeout() {
-        return connectTimeout;
-    }
-
-    public java.time.Duration readTimeout() {
-        return readTimeout;
+    /**
+     * A simulated provider's "codes" are the classifications themselves, so the map is the identity
+     * over the taxonomy. A real adapter would map its own vocabulary — SMTP replies, HTTP statuses —
+     * onto the same closed set.
+     */
+    @Override
+    protected Map<String, FailureClassification> errorCodeMap() {
+        return IDENTITY_CODES;
     }
 
     @Override
-    public Channel channel() {
-        return channel;
-    }
-
-    @Override
-    public DeliveryOutcome send(RecipientRef recipient, ContentRef content) {
+    protected String providerCall(RecipientRef recipient, ContentRef content, IdempotencyKey key) {
         if (simulatedFailure == null) {
-            return DeliveryOutcome.succeeded();
+            return SUCCESS;
         }
         int call = callCount.incrementAndGet();
         if (failFirstAttempts > 0 && call > failFirstAttempts) {
-            return DeliveryOutcome.succeeded();
+            return SUCCESS;
         }
-        // The diagnostic names the classification and the channel only. It deliberately does not
-        // interpolate the recipient or anything derived from the content.
-        // Code-shaped, not prose: DeliveryOutcome redacts anything else, and a real adapter must
-        // map its provider's response the same way rather than passing the body through.
-        return DeliveryOutcome.failed(simulatedFailure, "SIM_" + channel);
+        return simulatedFailure.name();
     }
 }

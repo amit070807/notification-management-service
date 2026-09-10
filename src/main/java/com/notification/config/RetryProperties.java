@@ -59,10 +59,50 @@ public record RetryProperties(
     /** The default policy, applied to any channel without an override. */
     public RetryPolicy toPolicy() {
         return new RetryPolicy(
-                maxAttempts == null ? 5 : maxAttempts,
-                baseDelay == null ? Duration.ofSeconds(1) : baseDelay,
-                multiplier == null ? 2.0 : multiplier,
-                ceiling == null ? Duration.ofSeconds(60) : ceiling,
-                jitterRatio == null ? 0.2 : jitterRatio);
+                orDefault(maxAttempts, DEFAULT_MAX_ATTEMPTS),
+                orDefault(baseDelay, DEFAULT_BASE_DELAY),
+                orDefault(multiplier, DEFAULT_MULTIPLIER),
+                orDefault(ceiling, DEFAULT_CEILING),
+                orDefault(jitterRatio, DEFAULT_JITTER_RATIO));
+    }
+
+    /**
+     * @return the policy for {@code channel}, its override merged over the defaults
+     * @throws IllegalStateException if an override exceeds {@link #MAX_ALLOWED_ATTEMPTS} — a
+     *     configuration error worth refusing to start for, rather than silently honouring
+     */
+    public RetryPolicy policyFor(Channel channel) {
+        Override override = overrides.get(channel);
+        if (override == null) {
+            return toPolicy();
+        }
+        RetryPolicy base = toPolicy();
+        int attempts = orDefault(override.maxAttempts(), base.maxAttempts());
+        if (attempts > MAX_ALLOWED_ATTEMPTS) {
+            throw new IllegalStateException(
+                    ("Retry override for channel %s requests %d attempts, above the allowed maximum of %d."
+                                    + " Section 4.5 requires retry to remain bounded; a provider may differ in"
+                                    + " schedule but may not opt out of the bound.")
+                            .formatted(channel, attempts, MAX_ALLOWED_ATTEMPTS));
+        }
+        return new RetryPolicy(
+                attempts,
+                orDefault(override.baseDelay(), base.baseDelay()),
+                orDefault(override.multiplier(), base.multiplier()),
+                orDefault(override.ceiling(), base.ceiling()),
+                orDefault(override.jitterRatio(), base.jitterRatio()));
+    }
+
+    /** Resolved policy per channel, so callers need no knowledge of which channels are overridden. */
+    public Map<Channel, RetryPolicy> policiesByChannel() {
+        Map<Channel, RetryPolicy> resolved = new EnumMap<>(Channel.class);
+        for (Channel channel : Channel.values()) {
+            resolved.put(channel, policyFor(channel));
+        }
+        return resolved;
+    }
+
+    private static <T> T orDefault(T value, T fallback) {
+        return value == null ? fallback : value;
     }
 }

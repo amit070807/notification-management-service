@@ -7,6 +7,7 @@ import com.notification.domain.model.*;
 import com.notification.domain.port.*;
 import com.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.notification.domain.retry.FailureClassification;
+import com.notification.config.RetryPolicySelector;
 import com.notification.domain.retry.RetryPolicy;
 import com.notification.domain.retry.Retryability;
 import com.notification.domain.state.DeliveryState;
@@ -40,7 +41,7 @@ public class DeliveryProcessingService {
     private final ClockPort clock;
     private final IdPort ids;
     private final JdbcClient jdbc;
-    private final RetryPolicy retryPolicy;
+    private final RetryPolicySelector retryPolicies;
     private final RandomPort random;
     private final NotificationMetrics metrics;
 
@@ -52,7 +53,7 @@ public class DeliveryProcessingService {
             ClockPort clock,
             IdPort ids,
             JdbcClient jdbc,
-            RetryPolicy retryPolicy,
+            RetryPolicySelector retryPolicies,
             RandomPort random,
             NotificationMetrics metrics) {
         this.deliveries = deliveries;
@@ -63,7 +64,7 @@ public class DeliveryProcessingService {
         this.clock = clock;
         this.ids = ids;
         this.jdbc = jdbc;
-        this.retryPolicy = retryPolicy;
+        this.retryPolicies = retryPolicies;
         this.random = random;
         this.metrics = metrics;
     }
@@ -199,6 +200,11 @@ public class DeliveryProcessingService {
                     classification,
                     delivery.channel());
         }
+
+        // T032/FR-132: the schedule is per channel — push backs off more patiently than email,
+        // which is the substantive part of "handling" a rate limit (ADR-018). The BOUND is not
+        // per channel: a provider may differ in schedule, never opt out of being bounded.
+        RetryPolicy retryPolicy = retryPolicies.forChannel(delivery.channel());
 
         boolean retryable = Retryability.isRetryable(classification);
         boolean budgetRemains = retryPolicy.hasBudgetAfter(attemptNumber);
