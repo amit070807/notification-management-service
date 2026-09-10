@@ -30,11 +30,25 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * <p>The approach is a planted marker rather than pattern-matching for emails or phone numbers.
  * A pattern can have gaps and produce a false negative; a marker cannot — if the content reached
  * any scanned surface, the marker is there.
+ *
+ * <p>T065 extends the gate to feature 002's three new record types and to the push credential. Both
+ * feature flags are enabled, and that is load-bearing rather than incidental: two of the three types
+ * are only written when their flag is on, so scanning them with flags off would pass without ever
+ * having produced a row to scan. {@link #theNewRecordTypesAreActuallyWritten()} exists so that
+ * vacuity cannot go unnoticed — a scan that finds nothing because nothing happened is not a pass.
  */
+@org.springframework.test.context.TestPropertySource(
+        properties = {
+            "notification.features.dedup-submission=true",
+            "notification.features.delivery-reclaim=true",
+            "notification.channel.credentials.PUSH.token=ZZ-PUSH-CREDENTIAL-MARKER-8b3f",
+            "notification.channel.credentials.PUSH.token-ref=env:PUSH_TOKEN"
+        })
 class NoSensitiveDataLeakTest extends RetryTestSupport {
 
     private static final String CONTENT_MARKER = "ZZ-CONTENT-MARKER-9f2a-DO-NOT-LEAK";
     private static final String RECIPIENT_MARKER = "ZZ-RECIPIENT-MARKER-7c1b";
+    private static final String CREDENTIAL_MARKER = "ZZ-PUSH-CREDENTIAL-MARKER-8b3f";
 
     @Autowired private JdbcClient jdbc;
     @Autowired private MeterRegistry meters;
@@ -141,12 +155,101 @@ class NoSensitiveDataLeakTest extends RetryTestSupport {
         assertThat(allAuditRows()).doesNotContain(CONTENT_MARKER);
     }
 
+    /**
+     * T065 — the suppression, retry-execution and reclaim records leak nothing (FR-153, SC-111).
+     *
+     * <p>All three are new surfaces for the same old leak. The suppression record is the one worth
+     * naming: it is written for a submission that was refused, so it is the only audit row describing a
+     * request whose content the system deliberately never processed — echoing that content back into
+     * the trail would be a leak with no delivery to justify it.
+     */
+    @Test
+    void theNewRecordTypesLeakNothing() throws Exception {
+        exerciseNewRecordTypes("leaks");
+
+        SensitiveDataScanner.create()
+                .forbidding(CONTENT_MARKER)
+                .forbidding(RECIPIENT_MARKER)
+                .forbidding(CREDENTIAL_MARKER)
+                .scanning(allAuditRows())
+                .scanning(capturedLogs())
+                .scanning(metricLabels())
+                .assertNothingLeaked();
+    }
+
+    /**
+     * The anti-vacuity guard. Without it the scan above would pass on a build where suppression and
+     * reclaim never fired, which is the failure mode a flag-gated feature makes easy: the gate reports
+     * green and has inspected nothing.
+     */
+    @Test
+    void theNewRecordTypesAreActuallyWritten() throws Exception {
+        Exercised exercised = exerciseNewRecordTypes("written");
+
+        // Scoped to THIS test's notifications. A global DISTINCT event_type would pass on rows another
+        // class left in the shared container, which would make the anti-vacuity guard itself vacuous —
+        // the exact failure it was added to catch, one level up.
+        assertThat(auditTypesFor(exercised.retried())).contains("RETRY_EXECUTED", "NOTIFICATION_SUPPRESSED");
+        assertThat(auditTypesFor(exercised.stranded())).contains("DELIVERY_RECLAIMED");
+    }
+
+    private record Exercised(UUID retried, UUID stranded) {}
+
+    /**
+     * Drives one run that produces all three of feature 002's record types.
+     *
+     * <p>The suffix makes the client identifiers unique per caller. Without it the second test to call
+     * this would repeat a boundary the first had already used, and with deduplication on its opening
+     * submission would be suppressed rather than accepted — a test failing on the fixture rather than
+     * on the behaviour, and the container is shared across the whole suite.
+     */
+    private Exercised exerciseNewRecordTypes(String suffix) throws Exception {
+        // RETRY_EXECUTED, with the provider echoing content into its error text on the way.
+        scripts.of(Channel.EMAIL)
+                .thenFailEchoingContent("provider said: " + CONTENT_MARKER)
+                .thenSucceed();
+        UUID retried = submitWithMarkers("leak-retry-" + suffix);
+        poller.drainOnce();
+        runUntilSettled(4);
+
+        // NOTIFICATION_SUPPRESSED — the same boundary, submitted again. Attributed to the original
+        // notification, which is why the assertions can scope to `retried`.
+        submitWithMarkersExpecting("leak-retry-" + suffix, status().isOk());
+
+        // DELIVERY_RECLAIMED. The stranded row state is written directly; killing a worker
+        // mid-transaction would roll it back and strand nothing.
+        scripts.of(Channel.EMAIL).alwaysSucceed();
+        UUID stranded = submitWithMarkers("leak-reclaim-" + suffix);
+        poller.drainOnce();
+        jdbc.sql(
+                        "UPDATE delivery SET state = 'IN_PROGRESS', claimed_until = ? "
+                                + "WHERE notification_id = ?")
+                .param(java.sql.Timestamp.from(clock.now().minus(Duration.ofMinutes(5))))
+                .param(stranded)
+                .update();
+        worker.runOnce();
+
+        return new Exercised(retried, stranded);
+    }
+
+    private java.util.List<String> auditTypesFor(UUID notificationId) {
+        return jdbc.sql("SELECT DISTINCT event_type FROM audit_event WHERE notification_id = ?")
+                .param(notificationId)
+                .query(String.class)
+                .list();
+    }
+
+    private void submitWithMarkersExpecting(
+            String clientId, org.springframework.test.web.servlet.ResultMatcher expected) throws Exception {
+        mockMvc.perform(
+                        post("/api/v1/notifications")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(markedSubmission(clientId)))
+                .andExpect(expected);
+    }
+
     private UUID submitWithMarkers(String clientId) throws Exception {
-        String json =
-                validSubmission(clientId)
-                        .replace("[\"EMAIL\", \"SMS\"]", "[\"EMAIL\"]")
-                        .replace("\"recipients\": [\"user-1\", \"user-2\"]", "\"recipients\": [\"" + RECIPIENT_MARKER + "\"]")
-                        .replace("payload-" + clientId, CONTENT_MARKER);
+        String json = markedSubmission(clientId);
 
         String body =
                 mockMvc.perform(post("/api/v1/notifications").contentType(MediaType.APPLICATION_JSON).content(json))
@@ -155,6 +258,13 @@ class NoSensitiveDataLeakTest extends RetryTestSupport {
                         .getResponse()
                         .getContentAsString();
         return UUID.fromString(body.replaceAll(".*\"id\"\\s*:\\s*\"([^\"]+)\".*", "$1"));
+    }
+
+    private String markedSubmission(String clientId) {
+        return validSubmission(clientId)
+                .replace("[\"EMAIL\", \"SMS\"]", "[\"EMAIL\"]")
+                .replace("\"recipients\": [\"user-1\", \"user-2\"]", "\"recipients\": [\"" + RECIPIENT_MARKER + "\"]")
+                .replace("payload-" + clientId, CONTENT_MARKER);
     }
 
     private String allAuditRows() {

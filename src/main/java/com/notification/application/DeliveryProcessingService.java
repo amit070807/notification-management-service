@@ -9,6 +9,7 @@ import com.notification.domain.port.*;
 import com.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.notification.domain.retry.FailureClassification;
 import com.notification.config.RetryPolicySelector;
+import com.notification.domain.retry.RetryAuditRef;
 import com.notification.domain.retry.RetryPolicy;
 import com.notification.domain.retry.Retryability;
 import com.notification.domain.state.DeliveryState;
@@ -120,10 +121,31 @@ public class DeliveryProcessingService {
     private void attempt(Delivery delivery, Notification notification, Instant now) {
         int attemptNumber = delivery.attemptCount() + 1;
 
+        // T063/FR-150 — an attempt that a retry scheduled is recorded as such, BEFORE the state
+        // transition erases the evidence: RETRY_SCHEDULED is the only thing distinguishing a retry
+        // execution from a first attempt, and the transition below overwrites it.
+        //
+        // A reclaimed re-attempt is deliberately excluded. It arrives QUEUED, because it is a repeat of
+        // an attempt already begun rather than a newly scheduled one, and recording it as a retry
+        // execution would inflate the retry history with attempts no retry ever scheduled.
+        boolean isScheduledRetry = delivery.state() == DeliveryState.RETRY_SCHEDULED;
+
         // The local object goes stale the moment we transition, so carry the live state forward.
         // Without this, the second transition would be checked from QUEUED rather than
         // IN_PROGRESS and the state machine would correctly reject it as illegal.
         Delivery inProgress = transition(delivery, DeliveryState.IN_PROGRESS, now, null, delivery.attemptCount());
+        if (isScheduledRetry) {
+            audit.record(
+                    notification.id(),
+                    notification.correlationId(),
+                    AuditEventType.RETRY_EXECUTED,
+                    new AuditPayload.RetryExecuted(
+                            delivery.id().toString(),
+                            delivery.channel().name(),
+                            attemptNumber,
+                            RetryAuditRef.forExecutionOfAttempt(delivery.id(), attemptNumber),
+                            String.valueOf(delivery.nextAttemptAt())));
+        }
 
         audit.record(
                 notification.id(),
@@ -267,7 +289,8 @@ public class DeliveryProcessingService {
                             delivery.channel().name(),
                             attemptNumber,
                             nextAttempt.toString(),
-                            classification.name()));
+                            classification.name(),
+                            RetryAuditRef.forSchedulingAfterAttempt(delivery.id(), attemptNumber)));
             return;
         }
 

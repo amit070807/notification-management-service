@@ -119,8 +119,12 @@ public sealed interface AuditPayload
         }
     }
 
+    /**
+     * <p>{@code scheduledRef} is the same value the matching {@code RetryExecuted} carries, so a reader
+     * can join the two directly instead of having to know how the reference is derived (FR-150a).
+     */
     record RetryScheduled(String deliveryId, String channel, int attemptNumber, String nextAttemptAt,
-            String classification) implements AuditPayload {
+            String classification, String scheduledRef) implements AuditPayload {
         @Override
         public Map<String, String> fields() {
             return Map.of(
@@ -128,7 +132,8 @@ public sealed interface AuditPayload
                     "channel", channel,
                     "attemptNumber", String.valueOf(attemptNumber),
                     "nextAttemptAt", nextAttemptAt,
-                    "classification", classification);
+                    "classification", classification,
+                    "scheduledRef", scheduledRef);
         }
     }
 

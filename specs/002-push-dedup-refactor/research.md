@@ -246,6 +246,36 @@ row keeps its own id, so using the generated one would leave the outcome update 
 the attempt would stay `PENDING` forever — a silent stall in the code path that exists to fix a silent
 stall.
 
+## ADR-024: The retry audit trail is not behind a feature flag
+
+**Status**: Accepted, during implementation of US4.
+
+**Context**: FR-105 requires that with all flags off, the service is indistinguishable from the phase-1
+baseline. US4 adds a `RETRY_EXECUTED` audit record on every retry execution. Emitting it unconditionally
+is, literally read, a difference from phase 1 with the flags off.
+
+**Options**:
+
+1. **Add a fourth flag** for the audit enhancement.
+2. **Emit it unconditionally.**
+
+**Decision**: option 2 — no flag.
+
+**Reasoning**: the brownfield requirement asks to "record significant actions with proper audit trail
+for retry and failure handling". That is the deliverable, not an enhancement to be trialled, and a flag
+defaulting to off would mean shipping the code and not the requirement.
+
+The FR-105 tension is narrower than it first appears. FR-105 exists so that a rollback restores previous
+*behaviour* — what gets delivered, to whom, how often. An additional audit record changes none of that.
+The flags exist for the three changes that alter delivery outcomes: suppression discards a notification,
+reclaim causes an extra provider call. Neither is true of writing a row.
+
+**Consequence**: the flags-off baseline test cannot claim "no feature-002 event type appears". It claims
+the narrower true thing: the two flag-gated types do not appear, and `RETRY_EXECUTED` does not appear in
+*that* run because the run succeeds on its first attempt. A retrying run with flags off emits it by
+design, and `RetryAuditTest` is where that is asserted. The distinction is recorded in the test rather
+than left for a reader to infer from a passing assertion.
+
 ## Open — carried into implementation, not defaulted
 
 | ID | Open decision | Why it is not being assumed |
