@@ -26,3 +26,14 @@ channels:
     # Spec register item 5 permits escalation ONLY where the policy declares it explicitly,
     # which is what this key does.
     escalateAtSeverity: CRITICAL
+  # T020 (feature 002, ADR-017) — PUSH ships DISABLED.
+  #
+  # This `enabled` key IS the push feature flag. No separate boolean was introduced: the routing
+  # policy already switches channels, and a disabled channel is *explained* in the recorded routing
+  # decision as CHANNEL_DISABLED rather than merely absent. A second switch elsewhere would create
+  # two sources of truth for one question, and a state where they disagree.
+  #
+  # Shipping disabled also gives consumers a window: PUSH exists in the published contract enum
+  # before any response can contain it (feature 002 G-46).
+  PUSH:
+    enabled: false

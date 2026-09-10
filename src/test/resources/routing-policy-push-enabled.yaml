@@ -1,0 +1,16 @@
+# Test-only policy with PUSH enabled.
+#
+# The shipped src/main/resources/routing-policy.yaml keeps PUSH disabled (ADR-017), and
+# FlagsOffBaselineTest depends on that default staying off. Tests that need push therefore point
+# notification.routing.policy-location here rather than editing the shipped file.
+version: "test-push-enabled"
+
+channels:
+  EMAIL:
+    enabled: true
+  SMS:
+    enabled: true
+    minimumSeverity: HIGH
+    escalateAtSeverity: CRITICAL
+  PUSH:
+    enabled: true
